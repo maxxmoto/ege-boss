@@ -7,7 +7,7 @@ from aiogram.types import (
     Message, CallbackQuery, LabeledPrice,
     PreCheckoutQuery, FSInputFile
 )
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, or_f
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import (
@@ -62,7 +62,7 @@ async def rp_help(message: Message):
 # Stores expected answer text for short-answer tasks: {user_task_id: correct_text}
 _SHORT_ANSWERS = {}
 
-@router.message(F.text)
+@router.message(F.text, ~F.text.startswith("/"))
 async def short_answer_handler(message: Message):
     uid = message.from_user.id
     if uid not in _SHORT_ANSWER_USERS:
