@@ -102,7 +102,9 @@ async def main():
     dp.shutdown.register(on_shutdown)
 
     try:
-        await dp.start_polling(bot)
+        await bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.sleep(0.5)
+        await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         await bot.session.close()
 
