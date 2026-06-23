@@ -5,6 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramConflictError
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiohttp import web
@@ -101,11 +102,16 @@ async def main():
     else:
         # Polling mode with conflict handling
         await bot.delete_webhook(drop_pending_updates=True)
-        await asyncio.sleep(2)
-        for attempt in range(10):
+        logger.info("Waiting 10s for old container to stop...")
+        await asyncio.sleep(10)
+        logger.info("Starting polling")
+        for attempt in range(20):
             try:
                 await dp.start_polling(bot, drop_pending_updates=True)
                 break
+            except TelegramConflictError:
+                logger.warning(f"Conflict on attempt {attempt+1}, waiting 10s...")
+                await asyncio.sleep(10)
             except Exception as e:
                 logger.warning(f"Polling attempt {attempt+1} failed: {e}")
                 await asyncio.sleep(5)
