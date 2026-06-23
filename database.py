@@ -119,6 +119,13 @@ class Database:
         )
         await self._db.commit()
 
+    async def set_subject(self, telegram_id: int, subject_code: str):
+        await self._db.execute(
+            "UPDATE users SET selected_subject = ?, updated_at = datetime('now') WHERE telegram_id = ?",
+            (subject_code, telegram_id)
+        )
+        await self._db.commit()
+
     async def seed_subjects(self):
         subjects = [
             ("math", "Математика (профиль)"),
