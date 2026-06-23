@@ -17,6 +17,7 @@ def reply_menu(is_subscribed: bool = False):
 def main_menu():
     builder = InlineKeyboardBuilder()
     builder.button(text="Задания на сегодня", callback_data="today_tasks")
+    builder.button(text="Тест-режим", callback_data="test_mode")
     builder.button(text="Статистика", callback_data="show_stats")
     builder.button(text="Профиль", callback_data="show_profile")
     builder.button(text="PDF c вариантом", callback_data="generate_pdf")

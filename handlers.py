@@ -13,7 +13,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import (
     SUBJECTS, SUBJECT_DATIVE, STAR_PRICES, PRICE_LABELS,
     ADMIN_IDS, FREE_TASK_COUNT, DAILY_TASK_COUNT, DEFAULT_REMINDER,
-    FREE_INFO, SUBSCRIPTION_INFO
+    FREE_INFO, SUBSCRIPTION_INFO, FREE_TEST_COUNT, PRO_TEST_COUNT,
+    PRIVATE_CHAT_LINK
 )
 from database import db
 from keyboards import (
@@ -123,6 +124,129 @@ async def cmd_help(message: Message):
         f"статистику, PDF и напоминания",
         reply_markup=main_menu()
     )
+
+# ── Admin commands ────────────────────────────
+
+async def admin_only(message: Message) -> bool:
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Эта команда только для администратора.")
+        return False
+    return True
+
+
+@router.message(Command("give_sub"))
+async def cmd_give_sub(message: Message):
+    if not await admin_only(message):
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Формат: /give_sub @username <месяцы>")
+        return
+    username = args[1].lstrip("@")
+    try:
+        months = int(args[2])
+    except ValueError:
+        await message.answer("Месяцы должны быть числом.")
+        return
+
+    all_users = await db.get_all_users()
+    target = None
+    for u in all_users:
+        if u.get("username") == username:
+            target = u
+            break
+    if not target:
+        await message.answer(f"Пользователь @{username} не найден.")
+        return
+
+    ok = await db.give_subscription(target["telegram_id"], months)
+    if ok:
+        await message.answer(
+            f"Подписка выдана @{username} на {months} мес."
+        )
+        try:
+            await message.bot.send_message(
+                target["telegram_id"],
+                f"Администратор выдал тебе Pro-подписку на {months} мес.!",
+                reply_markup=main_menu()
+            )
+        except:
+            pass
+    else:
+        await message.answer("Не удалось выдать подписку.")
+
+
+@router.message(Command("revoke_sub"))
+async def cmd_revoke_sub(message: Message):
+    if not await admin_only(message):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Формат: /revoke_sub @username")
+        return
+    username = args[1].lstrip("@")
+
+    all_users = await db.get_all_users()
+    target = None
+    for u in all_users:
+        if u.get("username") == username:
+            target = u
+            break
+    if not target:
+        await message.answer(f"Пользователь @{username} не найден.")
+        return
+
+    ok = await db.revoke_subscription(target["telegram_id"])
+    if ok:
+        await message.answer(f"Подписка отозвана у @{username}.")
+        try:
+            await message.bot.send_message(
+                target["telegram_id"],
+                "Твоя Pro-подписка была отозвана администратором."
+            )
+        except:
+            pass
+    else:
+        await message.answer("У пользователя нет активной подписки.")
+
+
+@router.message(Command("admin_stats"))
+async def cmd_admin_stats(message: Message):
+    if not await admin_only(message):
+        return
+    stats = await db.get_admin_stats()
+    await message.answer(
+        f"Статистика бота:\n\n"
+        f"Всего пользователей: {stats['total_users']}\n"
+        f"С подпиской: {stats['paid_users']}\n"
+        f"Заданий сегодня: {stats['today_tasks']}\n"
+        f"Всего платежей: {stats['total_payments']}"
+    )
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message):
+    if not await admin_only(message):
+        return
+    text = message.text.removeprefix("/broadcast").strip()
+    if not text:
+        await message.answer("Формат: /broadcast <сообщение>")
+        return
+
+    users = await db.get_all_users()
+    sent = 0
+    failed = 0
+    for u in users:
+        try:
+            await message.bot.send_message(
+                u["telegram_id"], text, parse_mode="HTML"
+            )
+            sent += 1
+        except:
+            failed += 1
+
+    await message.answer(f"Рассылка завершена.\nДоставлено: {sent}\nОшибок: {failed}")
+
 
 # ── Callbacks ────────────────────────────────
 
@@ -318,21 +442,39 @@ async def cb_answer(callback: CallbackQuery):
     correct_letter = chr(65 + user_task["correct_answer"])
     answer_letter = chr(65 + ans_idx)
 
+    has_sub = await db.check_subscription(user["id"])
+
     if is_correct:
         result = f"{EMOJI['check']} <b>Верно!</b>"
     else:
         result = f"{EMOJI['cross']} <b>Неверно.</b> Правильный ответ: {correct_letter}"
 
     exp = user_task.get("explanation", "")
-    exp_text = f"\n\n{EMOJI['book']} <b>Объяснение:</b>\n{exp}" if exp else ""
+    if exp and has_sub:
+        exp_text = f"\n\n{EMOJI['book']} <b>Разбор:</b>\n{exp}"
+    elif exp and not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Разбор в Pro", callback_data="show_subscription_info")
+        builder.button(text="Главное меню", callback_data="main_menu")
+        builder.adjust(1)
+        exp_text = f"\n\n{EMOJI['star']} <b>Разбор доступен в Pro</b>"
+        has_next = await db.get_next_unanswered(user["id"], user_task_id)
+        await safe_edit(
+            callback,
+            f"<b>Задание:</b>\n{user_task['question']}\n\n"
+            f"<b>Твой ответ:</b> {answer_letter}\n{result}{exp_text}",
+            builder.as_markup()
+        )
+        return
+    else:
+        exp_text = ""
 
     has_next = await db.get_next_unanswered(user["id"], user_task_id)
 
     await safe_edit(
         callback,
         f"<b>Задание:</b>\n{user_task['question']}\n\n"
-        f"<b>Твой ответ:</b> {answer_letter}\n"
-        f"{result}{exp_text}",
+        f"<b>Твой ответ:</b> {answer_letter}\n{result}{exp_text}",
         after_answer_keyboard(bool(has_next))
     )
 
@@ -446,6 +588,12 @@ async def cb_stats_by_subject(callback: CallbackQuery):
 @router.callback_query(F.data == "generate_pdf")
 async def cb_generate_pdf(callback: CallbackQuery):
     await handle_generate_pdf(callback.from_user.id, callback.message)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "test_mode")
+async def cb_test_mode(callback: CallbackQuery):
+    await handle_test_mode(callback.from_user.id, callback.message)
     await callback.answer()
 
 
@@ -773,6 +921,76 @@ async def handle_generate_pdf(telegram_id: int, target):
                 f"Заданий: {len(tasks)}. Ответы в конце файла.",
         parse_mode="HTML"
     )
+
+    try:
+        os.remove(filepath)
+    except:
+        pass
+
+
+async def handle_test_mode(telegram_id: int, target):
+    user = await db.get_user(telegram_id)
+    if not user:
+        await target.answer("Напиши /start, чтобы начать.")
+        return
+    if not user["selected_subject"]:
+        await target.answer(
+            f"{EMOJI['brain']} Сначала выбери предмет.",
+            reply_markup=subject_selection()
+        )
+        return
+
+    has_sub = await db.check_subscription(user["id"])
+    test_limit = PRO_TEST_COUNT if has_sub else FREE_TEST_COUNT
+    subject_name = SUBJECTS[user["selected_subject"]]
+
+    if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Ещё тесты в Pro", callback_data="show_subscription_info")
+        builder.button(text="Меню", callback_data="main_menu")
+        builder.adjust(1)
+        await target.answer(
+            f"{EMOJI['trophy']} <b>Тест-режим</b>\n\n"
+            f"10 заданий по {subject_name}\n"
+            f"Формат PDF — как на реальном ЕГЭ\n\n"
+            f"Бесплатно: {FREE_TEST_COUNT} тест в день\n"
+            f"Pro: {PRO_TEST_COUNT} теста в день\n\n"
+            f"Генерирую бесплатный тест...",
+            reply_markup=builder.as_markup(), parse_mode="HTML"
+        )
+    else:
+        await target.answer(
+            f"{EMOJI['trophy']} <b>Тест-режим Pro</b>\n\n"
+            f"Генерирую вариант из 10 заданий по {subject_name}...",
+            parse_mode="HTML"
+        )
+
+    tasks = await db.get_tasks_for_test(user["selected_subject"], 10)
+    if not tasks:
+        await target.answer("Недостаточно заданий для теста.")
+        return
+
+    filepath = await generate_pdf(telegram_id, subject_name, tasks)
+
+    doc = FSInputFile(filepath)
+    await target.answer_document(
+        doc,
+        caption=f"{EMOJI['trophy']} <b>Тест-режим</b>\n"
+                f"Предмет: {subject_name}\n"
+                f"Заданий: 10. Ответы в конце файла.\n"
+                f"Проверь себя и введи результат в боте!",
+        parse_mode="HTML"
+    )
+
+    if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Pro — ещё 2 теста в день", callback_data="show_subscription_info")
+        builder.button(text="Меню", callback_data="main_menu")
+        builder.adjust(1)
+        await target.answer(
+            f"{EMOJI['rocket']} Хочешь больше? В Pro — {PRO_TEST_COUNT} теста в день!",
+            reply_markup=builder.as_markup()
+        )
 
     try:
         os.remove(filepath)

@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, date, timedelta
 from functools import lru_cache
 from typing import Optional, Dict, List, Any
-from config import DATABASE_PATH, DAILY_TASK_COUNT, FREE_TASK_COUNT
+from config import DATABASE_PATH, DAILY_TASK_COUNT, FREE_TASK_COUNT, SPACED_REPEAT_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,32 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
+    async def get_tasks_for_test(self, subject_code: str, count: int = 10) -> List[Dict]:
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
+            (subject_code, count)
+        )
+        tasks = [dict(row) for row in await cursor.fetchall()]
+        for task in tasks:
+            task["options"] = task["options"].split("||")
+        return tasks
+
+    async def get_wrong_tasks(self, user_db_id: int, subject_code: str, limit: int = 3) -> List[Dict]:
+        """Spaced Repetition: get tasks user got wrong recently."""
+        cursor = await self._db.execute(
+            """SELECT t.*, COUNT(*) as wrong_count
+               FROM user_tasks ut JOIN tasks t ON ut.task_id = t.id
+               WHERE ut.user_id = ? AND t.subject_code = ? AND ut.is_correct = 0
+               GROUP BY t.id
+               ORDER BY wrong_count DESC, MAX(ut.answered_at) DESC
+               LIMIT ?""",
+            (user_db_id, subject_code, limit)
+        )
+        tasks = [dict(row) for row in await cursor.fetchall()]
+        for task in tasks:
+            task["options"] = task["options"].split("||")
+        return tasks
+
     async def assign_daily_tasks(self, user_db_id: int, subject_code: str, count: int = DAILY_TASK_COUNT) -> List[Dict]:
         today = date.today().isoformat()
 
@@ -248,20 +274,32 @@ class Database:
         )
         assigned_today = {row["task_id"] for row in await cursor.fetchall()}
 
-        cursor = await self._db.execute(
-            """SELECT * FROM tasks WHERE subject_code = ? AND id NOT IN (
-                   SELECT task_id FROM user_tasks WHERE user_id = ? AND assigned_date = ?
-               ) ORDER BY RANDOM() LIMIT ?""",
-            (subject_code, user_db_id, today, count)
-        )
-        tasks = [dict(row) for row in await cursor.fetchall()]
+        # Spaced Repetition: fill up to SPACED_REPEAT_LIMIT with mistakes
+        wrong = await self.get_wrong_tasks(user_db_id, subject_code, SPACED_REPEAT_LIMIT)
+        wrong = [t for t in wrong if t["id"] not in assigned_today]
 
-        if len(tasks) < count:
+        tasks = []
+        for t in wrong:
+            tasks.append(t)
+            assigned_today.add(t["id"])
+
+        remaining = count - len(tasks)
+
+        if remaining > 0:
             cursor = await self._db.execute(
-                "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
-                (subject_code, count - len(tasks))
+                """SELECT * FROM tasks WHERE subject_code = ? AND id NOT IN (
+                       SELECT task_id FROM user_tasks WHERE user_id = ? AND assigned_date = ?
+                   ) ORDER BY RANDOM() LIMIT ?""",
+                (subject_code, user_db_id, today, remaining)
             )
             tasks.extend([dict(row) for row in await cursor.fetchall()])
+
+            if len(tasks) < count:
+                cursor = await self._db.execute(
+                    "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
+                    (subject_code, count - len(tasks))
+                )
+                tasks.extend([dict(row) for row in await cursor.fetchall()])
 
         inserts = [(user_db_id, t["id"], today) for t in tasks]
         await self._db.executemany(
@@ -423,5 +461,64 @@ class Database:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    # ── Admin ─────────────────────────────────────────
+
+    async def get_user_by_telegram_id(self, telegram_id: int) -> Optional[Dict]:
+        return await self.get_user(telegram_id)
+
+    async def give_subscription(self, telegram_id: int, months: int):
+        user = await self.get_user(telegram_id)
+        if not user:
+            return False
+        current = user.get("subscription_end")
+        try:
+            end = datetime.fromisoformat(current) if current else datetime.now()
+        except (ValueError, TypeError):
+            end = datetime.now()
+        if end < datetime.now():
+            end = datetime.now()
+        new_end = end + timedelta(days=30 * months)
+        await self._db.execute(
+            "UPDATE users SET subscription_end = ? WHERE id = ?",
+            (new_end.isoformat(), user["id"])
+        )
+        await self._db.commit()
+        self._invalidate_user(telegram_id)
+        return True
+
+    async def revoke_subscription(self, telegram_id: int):
+        user = await self.get_user(telegram_id)
+        if not user or not user.get("subscription_end"):
+            return False
+        await self._db.execute(
+            "UPDATE users SET subscription_end = NULL WHERE id = ?", (user["id"],)
+        )
+        await self._db.commit()
+        self._invalidate_user(telegram_id)
+        return True
+
+    async def get_admin_stats(self) -> Dict:
+        cursor = await self._db.execute("SELECT COUNT(*) as total FROM users")
+        total_users = (await cursor.fetchone())[0]
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as cnt FROM users WHERE subscription_end IS NOT NULL AND datetime(subscription_end) > datetime('now')"
+        )
+        paid = (await cursor.fetchone())[0]
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) as cnt FROM user_tasks WHERE assigned_date = date('now')"
+        )
+        today_tasks = (await cursor.fetchone())[0]
+        cursor = await self._db.execute("SELECT COUNT(*) as cnt FROM payments")
+        payments = (await cursor.fetchone())[0]
+        return {
+            "total_users": total_users,
+            "paid_users": paid,
+            "today_tasks": today_tasks,
+            "total_payments": payments,
+        }
+
+    async def get_all_users(self) -> List[Dict]:
+        cursor = await self._db.execute("SELECT * FROM users")
+        return [dict(row) for row in await cursor.fetchall()]
 
 db = Database()
