@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Crown, Target, FileText, BookOpen, BarChart2, User, HelpCircle, Check, X, ChevronLeft, Star, Bell, Home, Send, Printer, Award, AlertCircle } from 'lucide-react';
-import { SUBJECTS, ALL_TASKS } from './data/tasks.js';
+
+let SUBJECTS = [];
+let ALL_TASKS = [];
 
 // ── pdf generator ──────────────────────────────────────
 function generatePDF(htmlContent) {
@@ -51,15 +53,12 @@ function shuffle(arr) {
   return a;
 }
 
-const TOPICS_BY_SUBJECT = {};
-ALL_TASKS.forEach(t => {
-  if (!TOPICS_BY_SUBJECT[t.subject]) TOPICS_BY_SUBJECT[t.subject] = new Set();
-  TOPICS_BY_SUBJECT[t.subject].add(t.topic);
-});
+let TOPICS_BY_SUBJECT = {};
 
 // ── main component ─────────────────────────────────────
 export default function EgeBossPlatform() {
   const [screen, setScreen] = useState('home');
+  const [ready, setReady] = useState(false);
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem('egeboss_user');
     return saved ? JSON.parse(saved) : { subjects: ['math','russian'], plan: 'Free', stars: 100, doneToday: 0, stats: {} };
@@ -71,7 +70,7 @@ export default function EgeBossPlatform() {
   const [pdfTasks, setPdfTasks] = useState([]);
   const [pdfTopic, setPdfTopic] = useState('');
   const [pdfSubject, setPdfSubject] = useState('');
-  const [testMode, setTestMode] = useState(null); // null | 'topic' | 'kim'
+  const [testMode, setTestMode] = useState(null);
   const [result, setResult] = useState(null);
   const [showPlanInfo, setShowPlanInfo] = useState(false);
   const printRef = useRef();
@@ -79,6 +78,27 @@ export default function EgeBossPlatform() {
   useEffect(() => {
     localStorage.setItem('egeboss_user', JSON.stringify(user));
   }, [user]);
+
+  // Load tasks from external JSON
+  useEffect(() => {
+    fetch('/ege-boss/tasks.json')
+      .then(r => r.json())
+      .then(data => {
+        SUBJECTS = data.subjects || [];
+        ALL_TASKS = data.tasks || [];
+        // Build TOPICS_BY_SUBJECT
+        TOPICS_BY_SUBJECT = {};
+        ALL_TASKS.forEach(t => {
+          if (!TOPICS_BY_SUBJECT[t.subject]) TOPICS_BY_SUBJECT[t.subject] = new Set();
+          TOPICS_BY_SUBJECT[t.subject].add(t.topic || '');
+        });
+        setReady(true);
+      })
+      .catch(() => {
+        // Fallback: empty
+        setReady(true);
+      });
+  }, []);
 
   const nav = s => { setScreen(s); setFeedback(null); setAnswer(''); setResult(null); setShowPlanInfo(false); };
 
@@ -518,6 +538,8 @@ export default function EgeBossPlatform() {
       </div>
     </div>
   );
+
+  if (!ready) return <div className="min-h-screen bg-[#101010] text-[#c69c6d] flex items-center justify-center text-lg">Загрузка заданий...</div>;
 
   return (
     <div className="min-h-screen bg-[#101010] text-[#e0d6c8] font-sans flex flex-col">
