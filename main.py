@@ -74,7 +74,8 @@ async def on_startup(bot: Bot):
     await db.connect()
     await db.seed_subjects()
     await db.seed_tasks(TASKS)
-    ensure_font()
+    # Font check in background — don't block startup
+    asyncio.create_task(asyncio.to_thread(ensure_font))
     setup_scheduler(bot)
     scheduler.start()
     logger.info("Bot started successfully")
@@ -101,13 +102,11 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
+    await bot.delete_webhook(drop_pending_updates=True)
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await asyncio.sleep(3.0)
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         await bot.session.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
