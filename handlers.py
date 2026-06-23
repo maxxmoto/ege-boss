@@ -65,29 +65,32 @@ async def cmd_start(message: Message):
         message.from_user.first_name, message.from_user.last_name
     )
     user = await db.get_user(uid)
+    hi_path = os.path.join(os.path.dirname(__file__), "fonts", "hi.png")
 
-    await message.answer(
-        f"{EMOJI['wave']} Привет, {message.from_user.first_name}!\n"
+    caption = (
+        f"{EMOJI['wave']} <b>Привет, {message.from_user.first_name}!</b>\n"
         f"Добро пожаловать в <b>EGE-BOSS</b> — твоего личного помощника "
-        f"для подготовки к ЕГЭ 2026.",
-        reply_markup=reply_menu()
+        f"для подготовки к ЕГЭ 2026."
     )
 
     if user and user["selected_subject"]:
         subs = db.parse_subjects(user["selected_subject"])
         subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS)
-        await message.answer(
-            f"{EMOJI['book']} Твои предметы: {subj_str}\n"
+        caption += (
+            f"\n\n{EMOJI['book']} Твои предметы: {subj_str}\n"
             f"{EMOJI['fire']} Сегодня ждут {DAILY_TASK_COUNT} новых заданий. "
-            f"Поехали!",
-            reply_markup=main_menu()
+            f"Поехали!"
         )
+        if os.path.exists(hi_path):
+            await message.answer_photo(FSInputFile(hi_path), caption=caption, reply_markup=main_menu(), parse_mode="HTML")
+        else:
+            await message.answer(caption, reply_markup=main_menu(), parse_mode="HTML")
     else:
-        await message.answer(
-            f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
-            f"Можно добавить несколько",
-            reply_markup=subject_selection()
-        )
+        caption += f"\n\n{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\nМожно добавить несколько"
+        if os.path.exists(hi_path):
+            await message.answer_photo(FSInputFile(hi_path), caption=caption, reply_markup=subject_selection(), parse_mode="HTML")
+        else:
+            await message.answer(caption, reply_markup=subject_selection(), parse_mode="HTML")
 
 
 @router.message(Command("tasks"))
@@ -664,18 +667,25 @@ async def successful_payment(message: Message):
         user = await db.get_user(uid)
         if user:
             await db.add_payment(user["id"], charge_id, stars, months)
+            # Immediately reassign today's tasks with Pro limit
+            await db.assign_daily_tasks(user["id"], user["selected_subject"], count=DAILY_TASK_COUNT)
 
         try:
+            from config import SUBJECTS as S
+            subs = db.parse_subjects(user["selected_subject"]) if user else []
+            subj_str = ", ".join(S[s] for s in subs if s in S) if subs else ""
             end_date = datetime.fromisoformat(user["subscription_end"]) + timedelta(days=30*months)
             end_str = end_date.strftime("%d.%m.%Y")
         except:
             end_str = ""
+            subj_str = ""
 
         await message.answer(
             f"{EMOJI['done']} <b>Оплата прошла успешно!</b>\n\n"
             f"{EMOJI['sub']} Подписка на {PRICE_LABELS.get(months, f'{months} мес.')} активирована.\n"
             f"{EMOJI['rocket']} Тебе доступны все предметы и функции.\n"
-            f"{EMOJI['fire']} Время заниматься!\n\n"
+            f"{EMOJI['fire']} Уже сегодня получишь {DAILY_TASK_COUNT} заданий вместо 1"
+            f"{' по ' + subj_str if subj_str else ''}!\n\n"
             f"\U0001f91d <b>Закрытый чат:</b>\n"
             f"\u2192 <a href='{PRIVATE_CHAT_LINK}'>Вступить</a>",
             reply_markup=main_menu()
