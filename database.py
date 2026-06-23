@@ -65,7 +65,7 @@ class Database:
                 explanation TEXT DEFAULT '',
                 topic TEXT DEFAULT '',
                 difficulty INTEGER DEFAULT 1,
-                year INTEGER DEFAULT 2026,
+                year INTEGER DEFAULT 2027,
                 FOREIGN KEY (subject_code) REFERENCES subjects(code)
             );
 
@@ -238,7 +238,7 @@ class Database:
                     task["id"], subject_code, task["q"],
                     "||".join(task["o"]), task["a"],
                     task.get("e", ""), task.get("t", ""),
-                    task.get("d", 1), task.get("y", 2026),
+                    task.get("d", 1), task.get("y", 2027),
                 ))
             await self._db.executemany(
                 """INSERT OR IGNORE INTO tasks

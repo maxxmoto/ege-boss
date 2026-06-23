@@ -69,8 +69,8 @@ async def cmd_start(message: Message):
 
     caption = (
         f"{EMOJI['wave']} <b>Привет, {message.from_user.first_name}!</b>\n"
-        f"Добро пожаловать в <b>EGE-BOSS</b> — твоего личного помощника "
-        f"для подготовки к ЕГЭ 2026."
+        f"Добро пожаловать в <b>ЕГЭ БОСС</b> — твоего личного помощника "
+        f"для подготовки к ЕГЭ 2027."
     )
 
     if user and user["selected_subject"]:
@@ -116,7 +116,7 @@ async def cmd_pdf(message: Message):
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
-        f"{EMOJI['help_em']} <b>EGE-BOSS — справка</b>\n\n"
+        f"{EMOJI['help_em']} <b>ЕГЭ БОСС — справка</b>\n\n"
         f"{EMOJI['menu']} <b>Меню снизу</b> — быстрые кнопки:\n"
         f"\u2022 Задания — получить задания на сегодня\n"
         f"\u2022 Статистика — твои успехи и ошибки\n"
@@ -388,8 +388,8 @@ async def cb_confirm_payment(callback: CallbackQuery):
 
     await callback.message.bot.send_invoice(
         chat_id=uid,
-        title=f"Подписка EGE-BOSS — {PRICE_LABELS[months]}",
-        description=f"Полный доступ к EGE-BOSS на {PRICE_LABELS[months]}",
+        title=f"Подписка ЕГЭ БОСС — {PRICE_LABELS[months]}",
+        description=f"Полный доступ к ЕГЭ БОСС на {PRICE_LABELS[months]}",
         payload=f"sub_{months}_{stars}",
         provider_token="",
         currency="XTR",
@@ -625,14 +625,68 @@ async def cb_generate_pdf(callback: CallbackQuery):
 
 @router.callback_query(F.data == "test_mode")
 async def cb_test_mode(callback: CallbackQuery):
-    await handle_test_mode(callback.from_user.id, callback.message)
+    uid = callback.from_user.id
+    user = await db.get_user(uid)
+    subs = db.parse_subjects(user["selected_subject"]) if user else []
+    if not subs:
+        await safe_edit(callback, "Сначала выбери предметы.", subject_selection([]))
+        await callback.answer()
+        return
+
+    # If only one subject, ask for task count directly
+    if len(subs) == 1:
+        await ask_test_count(callback, subs[0], callback.message)
+    else:
+        # Let user pick subject for the test
+        builder = InlineKeyboardBuilder()
+        for s in subs:
+            builder.button(text=SUBJECTS[s], callback_data=f"test_subj:{s}")
+        builder.button(text="Меню", callback_data="main_menu")
+        builder.adjust(1)
+        await safe_edit(callback, "Выбери предмет для теста:", builder.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("test_subj:"))
+async def cb_test_subj(callback: CallbackQuery):
+    subj = callback.data.split(":")[1]
+    await ask_test_count(callback, subj, callback.message)
+    await callback.answer()
+
+
+async def ask_test_count(target_or_cb, subject_code: str, target=None):
+    builder = InlineKeyboardBuilder()
+    for cnt in [5, 10, 15, 20]:
+        builder.button(text=f"{cnt} заданий", callback_data=f"test_gen:{subject_code}:{cnt}")
+    builder.button(text="Меню", callback_data="main_menu")
+    builder.adjust(2)
+
+    text = (
+        f"{EMOJI['trophy']} <b>Тест-режим</b>\n"
+        f"Предмет: {SUBJECTS[subject_code]}\n\n"
+        f"Выбери количество заданий:"
+    )
+
+    if hasattr(target_or_cb, "edit_text"):
+        await target_or_cb.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    else:
+        await target_or_cb.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("test_gen:"))
+async def cb_test_generate(callback: CallbackQuery):
+    _, subj, count_str = callback.data.split(":")
+    count = int(count_str)
+
+    await callback.message.edit_text(f"Генерирую вариант ({count} заданий)...")
+    await handle_test_mode(callback.from_user.id, callback.message, subj, count)
     await callback.answer()
 
 
 @router.callback_query(F.data == "show_help")
 async def cb_show_help(callback: CallbackQuery):
     await safe_edit(callback,
-        f"{EMOJI['help_em']} <b>EGE-BOSS — справка</b>\n\n"
+        f"{EMOJI['help_em']} <b>ЕГЭ БОСС — справка</b>\n\n"
         f"{EMOJI['menu']} <b>Меню снизу</b> — быстрые кнопки:\n"
         f"\u2022 Задания — получить задания на сегодня\n"
         f"\u2022 Статистика — твои успехи и ошибки\n"
@@ -973,46 +1027,22 @@ async def handle_generate_pdf(telegram_id: int, target):
         pass
 
 
-async def handle_test_mode(telegram_id: int, target):
+async def handle_test_mode(telegram_id: int, target, subject_code: str = None, count: int = 10):
     user = await db.get_user(telegram_id)
     if not user:
         await target.answer("Напиши /start, чтобы начать.")
         return
-    subs = db.parse_subjects(user["selected_subject"]) if user else []
-    if not subs:
-        await target.answer(
-            f"{EMOJI['brain']} Сначала выбери предметы.",
-            reply_markup=subject_selection([])
-        )
-        return
+    if not subject_code:
+        subs = db.parse_subjects(user["selected_subject"]) if user else []
+        if not subs:
+            await target.answer("Сначала выбери предметы.", reply_markup=subject_selection([]))
+            return
+        subject_code = subs[0]
 
-    first_subj = subs[0]
+    subject_name = SUBJECTS[subject_code]
     has_sub = await db.check_subscription(user["id"])
-    test_limit = PRO_TEST_COUNT if has_sub else FREE_TEST_COUNT
-    subject_name = SUBJECTS[first_subj]
 
-    if not has_sub:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Ещё тесты в Pro", callback_data="show_subscription_info")
-        builder.button(text="Меню", callback_data="main_menu")
-        builder.adjust(1)
-        await target.answer(
-            f"{EMOJI['trophy']} <b>Тест-режим</b>\n\n"
-            f"10 заданий по {subject_name}\n"
-            f"Формат PDF — как на реальном ЕГЭ\n\n"
-            f"Бесплатно: {FREE_TEST_COUNT} тест в день\n"
-            f"Pro: {PRO_TEST_COUNT} теста в день\n\n"
-            f"Генерирую бесплатный тест...",
-            reply_markup=builder.as_markup(), parse_mode="HTML"
-        )
-    else:
-        await target.answer(
-            f"{EMOJI['trophy']} <b>Тест-режим Pro</b>\n\n"
-            f"Генерирую вариант из 10 заданий по {subject_name}...",
-            parse_mode="HTML"
-        )
-
-    tasks = await db.get_tasks_for_test(first_subj, 10)
+    tasks = await db.get_tasks_for_test(subject_code, count)
     if not tasks:
         await target.answer("Недостаточно заданий для теста.")
         return
@@ -1024,22 +1054,61 @@ async def handle_test_mode(telegram_id: int, target):
         doc,
         caption=f"{EMOJI['trophy']} <b>Тест-режим</b>\n"
                 f"Предмет: {subject_name}\n"
-                f"Заданий: 10. Ответы в конце файла.\n"
-                f"Проверь себя и введи результат в боте!",
+                f"Заданий: {count}. Ответы в конце файла.",
         parse_mode="HTML"
     )
 
-    if not has_sub:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Pro — ещё 2 теста в день", callback_data="show_subscription_info")
-        builder.button(text="Меню", callback_data="main_menu")
-        builder.adjust(1)
-        await target.answer(
-            f"{EMOJI['rocket']} Хочешь больше? В Pro — {PRO_TEST_COUNT} теста в день!",
-            reply_markup=builder.as_markup()
-        )
+    # Ask how many correct
+    builder = InlineKeyboardBuilder()
+    for correct in [0, 1, 2, 3, 4, 5]:
+        builder.button(text=str(correct), callback_data=f"test_result:{count}:{correct}")
+    builder.adjust(6)
+    more = [6, 7, 8, 9, 10]
+    if count > 10:
+        more.extend([11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    for c in more:
+        if c <= count:
+            builder.button(text=str(c), callback_data=f"test_result:{count}:{c}")
+    builder.adjust(6)
+
+    await target.answer(
+        f"Сколько заданий решил верно? (из {count})",
+        reply_markup=builder.as_markup()
+    )
 
     try:
         os.remove(filepath)
     except:
         pass
+
+
+@router.callback_query(F.data.startswith("test_result:"))
+async def cb_test_result(callback: CallbackQuery):
+    _, total_str, correct_str = callback.data.split(":")
+    total, correct = int(total_str), int(correct_str)
+    wrong = total - correct
+    pct = int(correct / total * 100) if total else 0
+
+    text = (
+        f"{EMOJI['trophy']} <b>Результат теста:</b>\n\n"
+        f"Всего: {total}\n"
+        f"Верно: {correct}\n"
+        f"Ошибок: {wrong}\n"
+        f"Точность: {pct}%\n"
+    )
+    if pct >= 80:
+        text += f"\n{EMOJI['fire']} Отличный результат!"
+    elif pct >= 50:
+        text += f"\n{EMOJI['brain']} Хорошо, есть куда расти!"
+    else:
+        text += f"\n{EMOJI['rocket']} Тренируйся ещё — всё получится!"
+
+    # Save to stats (approximate: mark tasks as correct/wrong proportionally)
+    uid = callback.from_user.id
+    user = await db.get_user(uid)
+    if user:
+        # We don't have specific task IDs for the test, so save approximate stats
+        # This will be refined in future versions
+        pass
+
+    await safe_edit(callback, text, main_menu())
