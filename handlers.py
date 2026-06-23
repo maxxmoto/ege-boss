@@ -120,38 +120,52 @@ async def short_answer_handler(message: Message):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    uid = message.from_user.id
-    await db.add_user(
-        uid, message.from_user.username,
-        message.from_user.first_name, message.from_user.last_name
-    )
-    user = await db.get_user(uid)
-    hi_path = os.path.join(os.path.dirname(__file__), "fonts", "1A1F47EE-D220-41FE-BDC8-4315AA470A4A.png")
-
-    caption = (
-        f"{EMOJI['wave']} <b>Привет, {message.from_user.first_name}!</b>\n"
-        f"Добро пожаловать в <b>ЕГЭ БОСС</b> — твоего личного помощника "
-        f"для подготовки к ЕГЭ 2027."
-    )
-
-    if user and user["selected_subject"]:
-        subs = db.parse_subjects(user["selected_subject"])
-        subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS)
-        caption += (
-            f"\n\n{EMOJI['book']} Твои предметы: {subj_str}\n"
-            f"{EMOJI['fire']} Сегодня ждут {DAILY_TASK_COUNT} новых заданий. "
-            f"Поехали!"
+    try:
+        uid = message.from_user.id
+        await db.add_user(
+            uid, message.from_user.username,
+            message.from_user.first_name, message.from_user.last_name
         )
-        if os.path.exists(hi_path):
-            await message.answer_photo(FSInputFile(hi_path), caption=caption, reply_markup=main_menu(), parse_mode="HTML")
+        user = await db.get_user(uid)
+        hi_path = os.path.join(os.path.dirname(__file__), "fonts", "1A1F47EE-D220-41FE-BDC8-4315AA470A4A.png")
+
+        caption = (
+            f"{EMOJI['wave']} <b>Привет, {message.from_user.first_name}!</b>\n"
+            f"Добро пожаловать в <b>ЕГЭ БОСС</b> — твоего личного помощника "
+            f"для подготовки к ЕГЭ 2027."
+        )
+
+        if user and user["selected_subject"]:
+            subs = db.parse_subjects(user["selected_subject"])
+            subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS)
+            caption += (
+                f"\n\n{EMOJI['book']} Твои предметы: {subj_str}\n"
+                f"{EMOJI['fire']} Сегодня ждут {DAILY_TASK_COUNT} новых заданий."
+            )
+            try:
+                if os.path.exists(hi_path):
+                    await message.answer_photo(FSInputFile(hi_path), caption=caption[:1024], reply_markup=main_menu(), parse_mode="HTML")
+                else:
+                    await message.answer(caption, reply_markup=main_menu(), parse_mode="HTML")
+            except Exception as e:
+                logger.warning(f"Photo send failed: {e}")
+                await message.answer(caption, reply_markup=main_menu(), parse_mode="HTML")
         else:
-            await message.answer(caption, reply_markup=main_menu(), parse_mode="HTML")
-    else:
-        caption += f"\n\n{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\nМожно добавить несколько"
-        if os.path.exists(hi_path):
-            await message.answer_photo(FSInputFile(hi_path), caption=caption, reply_markup=subject_selection(), parse_mode="HTML")
-        else:
-            await message.answer(caption, reply_markup=subject_selection(), parse_mode="HTML")
+            caption += f"\n\n{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):"
+            try:
+                if os.path.exists(hi_path):
+                    await message.answer_photo(FSInputFile(hi_path), caption=caption[:1024], reply_markup=subject_selection(), parse_mode="HTML")
+                else:
+                    await message.answer(caption, reply_markup=subject_selection(), parse_mode="HTML")
+            except Exception as e:
+                logger.warning(f"Photo send failed: {e}")
+                await message.answer(caption, reply_markup=subject_selection(), parse_mode="HTML")
+    except Exception as e:
+        logger.exception(f"cmd_start failed: {e}")
+        try:
+            await message.answer("Добро пожаловать в ЕГЭ БОСС! Используй /help для справки.", reply_markup=main_menu())
+        except:
+            pass
 
 
 @router.message(Command("tasks"))
