@@ -476,6 +476,8 @@ async def cb_answer(callback: CallbackQuery):
 
     has_sub = await db.check_subscription(user["id"])
 
+    await callback.answer()
+
     if is_correct:
         result = f"{EMOJI['check']} <b>Верно!</b>"
     else:
@@ -674,7 +676,6 @@ async def topic_pick_topic(target, subject_code: str, msg=None):
         await msg.edit_text(txt, reply_markup=builder.as_markup())
     else:
         await target.answer(txt, reply_markup=builder.as_markup())
-    # Store topics for topic index lookup
     return topics
 
 
@@ -837,6 +838,10 @@ async def successful_payment(message: Message):
 # ── Helpers ──────────────────────────────────
 
 async def safe_edit(callback: CallbackQuery, text: str, markup=None):
+    try:
+        await callback.answer()
+    except:
+        pass
     try:
         await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
@@ -1088,7 +1093,7 @@ async def handle_generate_pdf(telegram_id: int, target):
         return
 
     subject_name = SUBJECTS[first_subj]
-    filepath = await generate_pdf(telegram_id, subject_name, tasks)
+    filepath = await generate_kim_pdf(telegram_id, subject_name, tasks)
 
     doc = FSInputFile(filepath)
     await target.answer_document(
