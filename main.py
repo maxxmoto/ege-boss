@@ -11,6 +11,7 @@ from database import db
 from task_data import TASKS
 from handlers import router
 from keyboards import task_answer_keyboard, reply_menu
+from pdf_service import ensure_font
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +74,7 @@ async def on_startup(bot: Bot):
     await db.connect()
     await db.seed_subjects()
     await db.seed_tasks(TASKS)
+    ensure_font()
     setup_scheduler(bot)
     scheduler.start()
     logger.info("Bot started successfully")

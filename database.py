@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, date, timedelta
 from functools import lru_cache
 from typing import Optional, Dict, List, Any
-from config import DATABASE_PATH, DAILY_TASK_COUNT, FREE_TASK_COUNT, SPACED_REPEAT_LIMIT
+from config import DATABASE_PATH, DAILY_TASK_COUNT, FREE_TASK_COUNT, SPACED_REPEAT_LIMIT, MAX_SUBJECTS
 
 logger = logging.getLogger(__name__)
 
@@ -152,13 +152,45 @@ class Database:
         await self._db.commit()
         self._invalidate_user(telegram_id)
 
-    async def set_subject(self, telegram_id: int, subject_code: str):
+    async def add_subject(self, telegram_id: int, subject_code: str) -> bool:
+        user = await self.get_user(telegram_id)
+        if not user:
+            return False
+        current = user.get("selected_subject") or ""
+        subjects = [s for s in current.split(",") if s] if current else []
+        if subject_code in subjects:
+            return True
+        if len(subjects) >= MAX_SUBJECTS:
+            return False
+        subjects.append(subject_code)
+        new_val = ",".join(subjects)
         await self._db.execute(
             "UPDATE users SET selected_subject = ?, updated_at = datetime('now') WHERE telegram_id = ?",
-            (subject_code, telegram_id)
+            (new_val, telegram_id)
         )
         await self._db.commit()
         self._invalidate_user(telegram_id)
+        return True
+
+    async def remove_subject(self, telegram_id: int, subject_code: str):
+        user = await self.get_user(telegram_id)
+        if not user:
+            return
+        current = user.get("selected_subject") or ""
+        subjects = [s for s in current.split(",") if s] if current else []
+        subjects = [s for s in subjects if s != subject_code]
+        new_val = ",".join(subjects)
+        await self._db.execute(
+            "UPDATE users SET selected_subject = ?, updated_at = datetime('now') WHERE telegram_id = ?",
+            (new_val, telegram_id)
+        )
+        await self._db.commit()
+        self._invalidate_user(telegram_id)
+
+    def parse_subjects(self, selected_subject: str | None) -> list:
+        if not selected_subject:
+            return []
+        return [s for s in selected_subject.split(",") if s]
 
     async def check_subscription(self, user_db_id: int) -> bool:
         cursor = await self._db.execute(
@@ -265,8 +297,9 @@ class Database:
             task["options"] = task["options"].split("||")
         return tasks
 
-    async def assign_daily_tasks(self, user_db_id: int, subject_code: str, count: int = DAILY_TASK_COUNT) -> List[Dict]:
+    async def assign_daily_tasks(self, user_db_id: int, subject_codes: str, count: int = DAILY_TASK_COUNT) -> List[Dict]:
         today = date.today().isoformat()
+        subjects = self.parse_subjects(subject_codes) or ["math"]
 
         cursor = await self._db.execute(
             "SELECT task_id FROM user_tasks WHERE user_id = ? AND assigned_date = ?",
@@ -274,30 +307,31 @@ class Database:
         )
         assigned_today = {row["task_id"] for row in await cursor.fetchall()}
 
-        # Spaced Repetition: fill up to SPACED_REPEAT_LIMIT with mistakes
-        wrong = await self.get_wrong_tasks(user_db_id, subject_code, SPACED_REPEAT_LIMIT)
-        wrong = [t for t in wrong if t["id"] not in assigned_today]
-
         tasks = []
-        for t in wrong:
-            tasks.append(t)
-            assigned_today.add(t["id"])
+
+        # Spaced Repetition from all subjects
+        for subj in subjects:
+            wrong = await self.get_wrong_tasks(user_db_id, subj, SPACED_REPEAT_LIMIT)
+            for t in wrong:
+                if t["id"] not in assigned_today and len(tasks) < count:
+                    tasks.append(t)
+                    assigned_today.add(t["id"])
 
         remaining = count - len(tasks)
-
         if remaining > 0:
+            ph = ",".join("?" for _ in subjects)
             cursor = await self._db.execute(
-                """SELECT * FROM tasks WHERE subject_code = ? AND id NOT IN (
+                f"""SELECT * FROM tasks WHERE subject_code IN ({ph}) AND id NOT IN (
                        SELECT task_id FROM user_tasks WHERE user_id = ? AND assigned_date = ?
                    ) ORDER BY RANDOM() LIMIT ?""",
-                (subject_code, user_db_id, today, remaining)
+                (*subjects, user_db_id, today, remaining)
             )
             tasks.extend([dict(row) for row in await cursor.fetchall()])
 
             if len(tasks) < count:
                 cursor = await self._db.execute(
-                    "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
-                    (subject_code, count - len(tasks))
+                    f"SELECT * FROM tasks WHERE subject_code IN ({ph}) ORDER BY RANDOM() LIMIT ?",
+                    (*subjects, count - len(tasks))
                 )
                 tasks.extend([dict(row) for row in await cursor.fetchall()])
 

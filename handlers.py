@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -14,7 +14,7 @@ from config import (
     SUBJECTS, SUBJECT_DATIVE, STAR_PRICES, PRICE_LABELS,
     ADMIN_IDS, FREE_TASK_COUNT, DAILY_TASK_COUNT, DEFAULT_REMINDER,
     FREE_INFO, SUBSCRIPTION_INFO, FREE_TEST_COUNT, PRO_TEST_COUNT,
-    PRIVATE_CHAT_LINK
+    PRIVATE_CHAT_LINK, MAX_SUBJECTS
 )
 from database import db
 from keyboards import (
@@ -74,17 +74,18 @@ async def cmd_start(message: Message):
     )
 
     if user and user["selected_subject"]:
-        subj = SUBJECTS.get(user["selected_subject"], "")
+        subs = db.parse_subjects(user["selected_subject"])
+        subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS)
         await message.answer(
-            f"{EMOJI['book']} Твой предмет: {subj}\n"
+            f"{EMOJI['book']} Твои предметы: {subj_str}\n"
             f"{EMOJI['fire']} Сегодня ждут {DAILY_TASK_COUNT} новых заданий. "
             f"Поехали!",
             reply_markup=main_menu()
         )
     else:
         await message.answer(
-            f"{EMOJI['brain']} С какого предмета начнём?\n"
-            f"Выбери ниже \u2193",
+            f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
+            f"Можно добавить несколько",
             reply_markup=subject_selection()
         )
 
@@ -250,35 +251,59 @@ async def cmd_broadcast(message: Message):
 
 # ── Callbacks ────────────────────────────────
 
-@router.callback_query(F.data.startswith("select_subject:"))
-async def cb_select_subject(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("toggle_subject:"))
+async def cb_toggle_subject(callback: CallbackQuery):
     subject_code = callback.data.split(":")[1]
     uid = callback.from_user.id
-    await db.set_subject(uid, subject_code)
-    subj_name = SUBJECTS[subject_code]
+    user = await db.get_user(uid)
+    current = db.parse_subjects(user["selected_subject"] if user else "")
 
-    builder = InlineKeyboardBuilder()
-    builder.button(text="Подробнее о подписке", callback_data="show_subscription_info")
-    builder.button(text="Меню", callback_data="main_menu")
-    builder.adjust(1)
+    if subject_code in current:
+        if len(current) <= 1:
+            await callback.answer("Должен быть хотя бы один предмет", show_alert=True)
+            return
+        await db.remove_subject(uid, subject_code)
+        current.remove(subject_code)
+    else:
+        ok = await db.add_subject(uid, subject_code)
+        if not ok:
+            await callback.answer(f"Максимум {MAX_SUBJECTS} предмета", show_alert=True)
+            return
+        current.append(subject_code)
 
-    await callback.message.edit_text(
-        f"{subj_name}\n\n"
-        f"{EMOJI['check']} Отличный выбор!\n"
-        f"Чтобы начать заниматься, оформи подписку.",
-        reply_markup=builder.as_markup()
+    await safe_edit(callback,
+        f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
+        f"Твои: {', '.join(SUBJECTS[s] for s in current) if current else 'пока ничего'}",
+        subject_selection(current)
     )
-    await callback.answer()
+
+
+@router.callback_query(F.data == "subjects_done")
+async def cb_subjects_done(callback: CallbackQuery):
+    uid = callback.from_user.id
+    user = await db.get_user(uid)
+    subjects = db.parse_subjects(user["selected_subject"]) if user else []
+    if not subjects:
+        await callback.answer("Выбери хотя бы один предмет", show_alert=True)
+        return
+
+    await safe_edit(callback,
+        f"{EMOJI['check']} Отлично! Твои предметы:\n"
+        + "\n".join(f"\u2022 {SUBJECTS[s]}" for s in subjects) +
+        "\n\nЧтобы начать, оформи подписку.",
+        main_menu()
+    )
 
 
 @router.callback_query(F.data == "main_menu")
 async def cb_main_menu(callback: CallbackQuery):
     uid = callback.from_user.id
     user = await db.get_user(uid)
-    subj = SUBJECTS.get(user["selected_subject"], "не выбран") if user else "не выбран"
+    subs = db.parse_subjects(user["selected_subject"]) if user else []
+    subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS) if subs else "не выбраны"
     await safe_edit(
         callback,
-        f"{EMOJI['menu']} <b>Главное меню</b>\n\nПредмет: {subj}",
+        f"{EMOJI['menu']} <b>Главное меню</b>\n\nПредметы: {subj_str}",
         main_menu()
     )
 
@@ -409,10 +434,14 @@ async def cb_disable_reminder(callback: CallbackQuery):
 
 @router.callback_query(F.data == "change_subject")
 async def cb_change_subject(callback: CallbackQuery):
+    uid = callback.from_user.id
+    user = await db.get_user(uid)
+    current = db.parse_subjects(user["selected_subject"]) if user else []
     await safe_edit(
         callback,
-        f"{EMOJI['brain']} Какой предмет будем штурмовать?",
-        subject_selection()
+        f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
+        f"Твои: {', '.join(SUBJECTS[s] for s in current) if current else 'пока ничего'}",
+        subject_selection(current)
     )
 
 
@@ -646,7 +675,9 @@ async def successful_payment(message: Message):
             f"{EMOJI['done']} <b>Оплата прошла успешно!</b>\n\n"
             f"{EMOJI['sub']} Подписка на {PRICE_LABELS.get(months, f'{months} мес.')} активирована.\n"
             f"{EMOJI['rocket']} Тебе доступны все предметы и функции.\n"
-            f"{EMOJI['fire']} Время заниматься!\n",
+            f"{EMOJI['fire']} Время заниматься!\n\n"
+            f"\U0001f91d <b>Закрытый чат:</b>\n"
+            f"\u2192 <a href='{PRIVATE_CHAT_LINK}'>Вступить</a>",
             reply_markup=main_menu()
         )
 
@@ -729,8 +760,9 @@ async def show_today_tasks(telegram_id: int, target):
         await target.answer(f"{EMOJI['wave']} Привет! Напиши /start, чтобы начать.")
         return
     if not user["selected_subject"]:
+        subjects = []
         await target.answer(
-            f"{EMOJI['brain']} Сначала выбери предмет:", reply_markup=subject_selection()
+            f"{EMOJI['brain']} Сначала выбери предметы:", reply_markup=subject_selection(subjects)
         )
         return
 
@@ -764,11 +796,11 @@ async def show_today_tasks(telegram_id: int, target):
             await target.answer(msg, reply_markup=main_menu())
         return
 
-    subj_name = SUBJECTS.get(user["selected_subject"], "")
     first = unanswered[0]
     done = len(today_tasks) - len(unanswered)
     total = len(today_tasks)
 
+    subj_name = SUBJECTS.get(first.get("subject_code", ""), "")
     header = f"{EMOJI['book']} <b>{subj_name}</b>"
     if not has_sub:
         header += f" ({EMOJI['star']} бесплатно {done}/{total})"
@@ -835,7 +867,8 @@ async def show_profile(telegram_id: int, target):
         await target.answer("Напиши /start, чтобы начать.")
         return
 
-    subj = SUBJECTS.get(user["selected_subject"], "не выбран")
+    subs = db.parse_subjects(user["selected_subject"]) if user else []
+    subj_str = ", ".join(SUBJECTS[s] for s in subs if s in SUBJECTS) if subs else "не выбраны"
     has_sub = await db.check_subscription(user["id"])
     sub_status = f"{EMOJI['check']} Активна" if has_sub else f"{EMOJI['cross']} Не активна"
 
@@ -858,7 +891,7 @@ async def show_profile(telegram_id: int, target):
 
     await target.answer(
         f"{EMOJI['settings']} <b>Профиль</b>\n\n"
-        f"{EMOJI['book']} Предмет: {subj}\n"
+        f"{EMOJI['book']} Предметы: {subj_str}\n"
         f"{EMOJI['sub']} Подписка: {sub_status}{sub_end}\n"
         f"{EMOJI['bell']} Напоминания: {rem_status} ({reminder})\n"
         f"{limits}",
@@ -872,13 +905,15 @@ async def handle_generate_pdf(telegram_id: int, target):
     if not user:
         await target.answer("Напиши /start, чтобы начать.")
         return
-    if not user["selected_subject"]:
+    subs = db.parse_subjects(user["selected_subject"]) if user else []
+    if not subs:
         await target.answer(
-            f"{EMOJI['brain']} Сначала выбери предмет.",
-            reply_markup=subject_selection()
+            f"{EMOJI['brain']} Сначала выбери предметы.",
+            reply_markup=subject_selection([])
         )
         return
 
+    first_subj = subs[0]
     has_sub = await db.check_subscription(user["id"])
     if not has_sub:
         builder = InlineKeyboardBuilder()
@@ -896,11 +931,11 @@ async def handle_generate_pdf(telegram_id: int, target):
 
     await target.answer(f"{EMOJI['pdf']} Генерирую персональный вариант...")
 
-    topics = await db.get_topic_errors(user["id"], user["selected_subject"])
+    topics = await db.get_topic_errors(user["id"], first_subj)
     weak_topics = [t["topic"] for t in topics[:3]] if topics else []
 
     if weak_topics:
-        tasks = await db.get_tasks_by_topics(user["selected_subject"], weak_topics, 5)
+        tasks = await db.get_tasks_by_topics(first_subj, weak_topics, 5)
     else:
         tasks = await db.get_today_tasks(user["id"])
         if not tasks:
@@ -910,7 +945,7 @@ async def handle_generate_pdf(telegram_id: int, target):
         await target.answer("Нет заданий для PDF.")
         return
 
-    subject_name = SUBJECTS[user["selected_subject"]]
+    subject_name = SUBJECTS[first_subj]
     filepath = await generate_pdf(telegram_id, subject_name, tasks)
 
     doc = FSInputFile(filepath)
@@ -933,16 +968,18 @@ async def handle_test_mode(telegram_id: int, target):
     if not user:
         await target.answer("Напиши /start, чтобы начать.")
         return
-    if not user["selected_subject"]:
+    subs = db.parse_subjects(user["selected_subject"]) if user else []
+    if not subs:
         await target.answer(
-            f"{EMOJI['brain']} Сначала выбери предмет.",
-            reply_markup=subject_selection()
+            f"{EMOJI['brain']} Сначала выбери предметы.",
+            reply_markup=subject_selection([])
         )
         return
 
+    first_subj = subs[0]
     has_sub = await db.check_subscription(user["id"])
     test_limit = PRO_TEST_COUNT if has_sub else FREE_TEST_COUNT
-    subject_name = SUBJECTS[user["selected_subject"]]
+    subject_name = SUBJECTS[first_subj]
 
     if not has_sub:
         builder = InlineKeyboardBuilder()
@@ -965,7 +1002,7 @@ async def handle_test_mode(telegram_id: int, target):
             parse_mode="HTML"
         )
 
-    tasks = await db.get_tasks_for_test(user["selected_subject"], 10)
+    tasks = await db.get_tasks_for_test(first_subj, 10)
     if not tasks:
         await target.answer("Недостаточно заданий для теста.")
         return

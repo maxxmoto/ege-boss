@@ -26,10 +26,14 @@ def main_menu():
     return builder.as_markup()
 
 
-def subject_selection():
+def subject_selection(selected: list = None):
     builder = InlineKeyboardBuilder()
+    selected = selected or []
     for code, name in SUBJECTS.items():
-        builder.button(text=name, callback_data=f"select_subject:{code}")
+        mark = " \u2705" if code in selected else ""
+        builder.button(text=f"{name}{mark}", callback_data=f"toggle_subject:{code}")
+    if selected:
+        builder.button(text="Готово", callback_data="subjects_done")
     builder.adjust(2)
     return builder.as_markup()
 
