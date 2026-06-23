@@ -39,6 +39,8 @@ def subject_selection(selected: list = None):
 
 
 def task_answer_keyboard(task_id: str, options: list):
+    if not options or len(options) == 0 or (len(options) == 1 and options[0] == ""):
+        return None
     builder = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
         short = opt if len(opt) <= 40 else opt[:37] + "..."

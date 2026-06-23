@@ -74,7 +74,7 @@ class Database:
                 user_id INTEGER NOT NULL,
                 task_id TEXT NOT NULL,
                 assigned_date TEXT NOT NULL,
-                user_answer INTEGER,
+                user_answer TEXT,
                 is_correct INTEGER,
                 answered_at TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id),
@@ -374,7 +374,7 @@ class Database:
         )
         return [self._row_to_dict(row) for row in await cursor.fetchall()]
 
-    async def answer_task(self, user_task_id: int, user_answer: int, is_correct: bool):
+    async def answer_task(self, user_task_id: int, user_answer, is_correct: bool):
         await self._db.execute(
             """UPDATE user_tasks
                SET user_answer = ?, is_correct = ?, answered_at = datetime('now')

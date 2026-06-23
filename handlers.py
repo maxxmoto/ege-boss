@@ -28,6 +28,9 @@ from pdf_service import generate_topic_pdf, generate_kim_pdf
 logger = logging.getLogger(__name__)
 router = Router()
 
+# Track users in short-answer mode: {telegram_id: (user_task_id, correct_answer)}
+_SHORT_ANSWER_USERS = {}
+
 EMOJI = {
     "wave": "\U0001f44b", "rocket": "\U0001f680", "fire": "\U0001f525",
     "star": "\U00002b50", "chart": "\U0001f4ca", "pdf": "\U0001f5b2",
@@ -54,6 +57,64 @@ async def rp_profile(message: Message):
 @router.message(F.text == "Помощь")
 async def rp_help(message: Message):
     await cmd_help(message)
+
+# ── Short-answer handler ──────────────────────
+# Stores expected answer text for short-answer tasks: {user_task_id: correct_text}
+_SHORT_ANSWERS = {}
+
+@router.message(F.text)
+async def short_answer_handler(message: Message):
+    uid = message.from_user.id
+    if uid not in _SHORT_ANSWER_USERS:
+        return
+    
+    user_task_id = _SHORT_ANSWER_USERS.pop(uid)
+    expected = _SHORT_ANSWERS.pop(user_task_id, "")
+    user_answer = message.text.strip()
+    
+    user = await db.get_user(uid)
+    if not user:
+        await message.answer("Ошибка. Используй /start")
+        return
+    
+    user_task = await db.get_user_task(user_task_id)
+    if not user_task:
+        await message.answer("Задание не найдено")
+        return
+    if user_task["is_correct"] is not None:
+        await message.answer("Ты уже ответил на это задание")
+        return
+    
+    # Compare answers
+    is_correct = False
+    try:
+        user_num = float(user_answer.replace(",", "."))
+        exp_num = float(str(expected).replace(",", "."))
+        is_correct = abs(user_num - exp_num) < 0.01
+    except:
+        is_correct = user_answer.lower().strip() == str(expected).lower().strip()
+    
+    await db.answer_task(user_task_id, user_answer if is_correct else -1, is_correct)
+    
+    if is_correct:
+        await message.answer(f"{EMOJI['check']} <b>Верно!</b>", parse_mode="HTML")
+    else:
+        await message.answer(f"{EMOJI['cross']} <b>Неверно.</b> Правильный ответ: {expected}", parse_mode="HTML")
+    
+    next_t = await db.get_next_unanswered(user["id"], user_task_id)
+    if next_t:
+        kb = task_answer_keyboard(str(next_t["id"]), next_t["options"])
+        text = f"<b>Задание:</b>\n{next_t['question']}\n\nТема: {next_t['topic']}"
+        if kb is None:
+            _SHORT_ANSWER_USERS[uid] = next_t["id"]
+            _SHORT_ANSWERS[next_t["id"]] = next_t.get("correct_answer", "")
+            text += f"\n\n{EMOJI['book']} Введите ваш ответ:"
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer("Все задания на сегодня выполнены!", reply_markup=main_menu())
+
 
 # ── Commands ─────────────────────────────────
 
@@ -524,20 +585,22 @@ async def cb_next_task(callback: CallbackQuery):
     has_sub = await db.check_subscription(user["id"])
     next_task = await db.get_next_unanswered(user["id"])
     if next_task:
-        text = (
-            f"<b>Задание:</b>\n{next_task['question']}\n\n"
-            f"Тема: {next_task['topic']}"
-        )
-        try:
-            await callback.message.edit_text(
-                text,
-                reply_markup=task_answer_keyboard(str(next_task["id"]), next_task["options"])
-            )
-        except:
-            await callback.message.answer(
-                text,
-                reply_markup=task_answer_keyboard(str(next_task["id"]), next_task["options"])
-            )
+        kb = task_answer_keyboard(str(next_task["id"]), next_task["options"])
+        text = f"<b>Задание:</b>\n{next_task['question']}\n\nТема: {next_task['topic']}"
+        if kb is None:
+            uid = callback.from_user.id
+            _SHORT_ANSWER_USERS[uid] = next_task["id"]
+            _SHORT_ANSWERS[next_task["id"]] = next_task.get("correct_answer", "")
+            text += f"\n\n{EMOJI['book']} Введите ваш ответ:"
+            try:
+                await callback.message.edit_text(text, parse_mode="HTML")
+            except:
+                await callback.message.answer(text, parse_mode="HTML")
+        else:
+            try:
+                await callback.message.edit_text(text, reply_markup=kb)
+            except:
+                await callback.message.answer(text, reply_markup=kb)
     else:
         await finish_tasks(callback.message, user["id"], has_sub)
     await callback.answer()
@@ -954,11 +1017,22 @@ async def show_today_tasks(telegram_id: int, target):
     else:
         header += f" ({done}/{total})"
 
-    await target.answer(
-        f"{header}\n\n<b>Задание:</b>\n{first['question']}\n\nТема: {first['topic']}",
-        reply_markup=task_answer_keyboard(str(first["id"]), first["options"]),
-        parse_mode="HTML"
-    )
+    kb = task_answer_keyboard(str(first["id"]), first["options"])
+    if kb is None:
+        uid = telegram_id
+        _SHORT_ANSWER_USERS[uid] = first["id"]
+        _SHORT_ANSWERS[first["id"]] = first.get("correct_answer", "")
+        await target.answer(
+            f"{header}\n\n<b>Задание:</b>\n{first['question']}\n\nТема: {first['topic']}\n\n"
+            f"{EMOJI['book']} Введите ваш ответ:",
+            parse_mode="HTML"
+        )
+    else:
+        await target.answer(
+            f"{header}\n\n<b>Задание:</b>\n{first['question']}\n\nТема: {first['topic']}",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
 
 
 async def show_stats_menu(telegram_id: int, target):
