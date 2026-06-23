@@ -8,6 +8,7 @@ from aiogram.types import (
     PreCheckoutQuery, FSInputFile
 )
 from aiogram.filters import Command, CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import (
     SUBJECTS, STAR_PRICES, PRICE_LABELS,
@@ -23,7 +24,6 @@ from keyboards import (
 from pdf_service import generate_pdf
 
 logger = logging.getLogger(__name__)
-
 router = Router()
 
 
@@ -97,21 +97,17 @@ async def cb_select_subject(callback: CallbackQuery):
     uid = callback.from_user.id
     await db.set_subject(uid, subject_code)
 
-    await callback.message.edit_text(
-        f"Предмет '{SUBJECTS[subject_code]}' выбран!\n"
-        "Чтобы получить доступ к заданиям, оформи подписку.",
-        reply_markup=(await subscription_required_keyboard(uid))
-    )
-    await callback.answer()
-
-
-async def subscription_required_keyboard(telegram_id: int):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     builder.button(text="Оформить подписку", callback_data="show_subscription")
     builder.button(text="Главное меню", callback_data="main_menu")
     builder.adjust(1)
-    return builder.as_markup()
+
+    await callback.message.edit_text(
+        f"Предмет '{SUBJECTS[subject_code]}' выбран!\n"
+        "Чтобы получить доступ к заданиям, оформи подписку.",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "main_menu")
@@ -119,11 +115,7 @@ async def cb_main_menu(callback: CallbackQuery):
     uid = callback.from_user.id
     user = await db.get_user(uid)
     subj = SUBJECTS.get(user["selected_subject"], "не выбран") if user else "не выбран"
-    await callback.message.edit_text(
-        f"Главное меню\nПредмет: {subj}",
-        reply_markup=main_menu()
-    )
-    await callback.answer()
+    await safe_edit(callback, f"Главное меню\nПредмет: {subj}", main_menu())
 
 
 @router.callback_query(F.data == "today_tasks")
@@ -150,41 +142,35 @@ async def cb_show_subscription(callback: CallbackQuery):
     user = await db.get_user(uid)
     has_sub = await db.check_subscription(user["id"]) if user else False
 
-    if has_sub:
-        end = user.get("subscription_end", "")
+    if has_sub and user.get("subscription_end"):
         try:
-            end_date = datetime.fromisoformat(end) if end else None
-            end_str = end_date.strftime("%d.%m.%Y") if end_date else "неизвестно"
+            end = datetime.fromisoformat(user["subscription_end"]).strftime("%d.%m.%Y")
         except:
-            end_str = end
-        await callback.message.edit_text(
-            f"Подписка активна до {end_str}\n\n"
-            "Вы можете продлить подписку или выбрать другой тариф:",
-            reply_markup=subscription_keyboard()
-        )
+            end = user["subscription_end"]
+        text = f"Подписка активна до {end}\n\nВы можете продлить подписку или выбрать другой тариф:"
     else:
-        await callback.message.edit_text(
+        text = (
             "Оформите подписку для доступа к заданиям:\n\n"
             "50 звезд - 1 месяц\n"
             "130 звезд - 3 месяца\n"
             "240 звезд - 6 месяцев\n"
-            "450 звезд - 12 месяцев",
-            reply_markup=subscription_keyboard()
+            "450 звезд - 12 месяцев"
         )
-    await callback.answer()
+    await safe_edit(callback, text, subscription_keyboard())
 
 
 @router.callback_query(F.data.startswith("subscribe:"))
 async def cb_subscribe(callback: CallbackQuery):
     months = int(callback.data.split(":")[1])
-    stars = STAR_PRICES[months]
-    await callback.message.edit_text(
-        f"Тариф: {PRICE_LABELS[months]}\n"
-        f"Стоимость: {stars} звезд\n\n"
-        "Подтвердите оплату:",
-        reply_markup=confirm_subscription_keyboard(months, stars)
+    stars = STAR_PRICES.get(months)
+    if not stars:
+        await callback.answer("Неверный тариф", show_alert=True)
+        return
+    await safe_edit(
+        callback,
+        f"Тариф: {PRICE_LABELS[months]}\nСтоимость: {stars} звезд\n\nПодтвердите оплату:",
+        confirm_subscription_keyboard(months, stars)
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("confirm_payment:"))
@@ -193,9 +179,10 @@ async def cb_confirm_payment(callback: CallbackQuery):
     months, stars = int(months_str), int(stars_str)
     uid = callback.from_user.id
 
-    await callback.message.edit_text(
-        "Отправляю счет на оплату..."
-    )
+    try:
+        await callback.message.edit_text("Отправляю счет на оплату...")
+    except:
+        await callback.message.answer("Отправляю счет на оплату...")
 
     await callback.message.bot.send_invoice(
         chat_id=uid,
@@ -216,13 +203,11 @@ async def cb_show_reminder(callback: CallbackQuery):
     current = user["reminder_time"] if user and user["reminder_time"] else DEFAULT_REMINDER
     enabled = user["reminder_enabled"] if user else 1
     status = "Включены" if enabled else "Отключены"
-    await callback.message.edit_text(
-        f"Напоминания: {status}\n"
-        f"Текущее время: {current}\n\n"
-        "Выберите время для ежедневных напоминаний:",
-        reply_markup=reminder_keyboard(current)
+    await safe_edit(
+        callback,
+        f"Напоминания: {status}\nТекущее время: {current}\n\nВыберите время для ежедневных напоминаний:",
+        reminder_keyboard(current)
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("set_reminder:"))
@@ -230,36 +215,28 @@ async def cb_set_reminder(callback: CallbackQuery):
     time_str = callback.data.split(":")[1]
     uid = callback.from_user.id
     await db.update_user(uid, reminder_time=time_str, reminder_enabled=1)
-    await callback.message.edit_text(
-        f"Напоминание установлено на {time_str}.\n"
-        "Каждый день в это время я буду присылать задания.",
-        reply_markup=main_menu()
+    await safe_edit(
+        callback,
+        f"Напоминание установлено на {time_str}.\nКаждый день в это время я буду присылать задания.",
+        main_menu()
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "disable_reminder")
 async def cb_disable_reminder(callback: CallbackQuery):
     uid = callback.from_user.id
     await db.update_user(uid, reminder_enabled=0)
-    await callback.message.edit_text(
-        "Напоминания отключены.",
-        reply_markup=main_menu()
-    )
-    await callback.answer()
+    await safe_edit(callback, "Напоминания отключены.", main_menu())
 
 
 @router.callback_query(F.data == "change_subject")
 async def cb_change_subject(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "Выберите предмет:",
-        reply_markup=subject_selection()
-    )
-    await callback.answer()
+    await safe_edit(callback, "Выберите предмет:", subject_selection())
 
 
 @router.callback_query(F.data.startswith("answer:"))
 async def cb_answer(callback: CallbackQuery):
+    uid = callback.from_user.id
     _, task_id, ans_idx = callback.data.split(":")
     ans_idx = int(ans_idx)
     user_task_id = int(task_id)
@@ -268,9 +245,13 @@ async def cb_answer(callback: CallbackQuery):
     if not user_task:
         await callback.answer("Задание не найдено", show_alert=True)
         return
-
     if user_task["is_correct"] is not None:
         await callback.answer("Вы уже ответили на это задание", show_alert=True)
+        return
+
+    user = await db.get_user(uid)
+    if not user or user_task["user_id"] != user["id"]:
+        await callback.answer("Это не ваше задание", show_alert=True)
         return
 
     is_correct = (ans_idx == user_task["correct_answer"])
@@ -278,25 +259,20 @@ async def cb_answer(callback: CallbackQuery):
 
     correct_letter = chr(65 + user_task["correct_answer"])
     answer_letter = chr(65 + ans_idx)
-
-    if is_correct:
-        result = "Верно!"
-    else:
-        result = f"Неверно. Правильный ответ: {correct_letter}"
-
+    result = "Верно!" if is_correct else f"Неверно. Правильный ответ: {correct_letter}"
     exp = user_task.get("explanation", "")
     exp_text = f"\n\nОбъяснение:\n{exp}" if exp else ""
 
-    has_next = await db.get_next_unanswered(
-        user_task["user_id"], user_task_id
-    )
+    has_next = await db.get_next_unanswered(user["id"], user_task_id)
 
-    await callback.message.edit_text(
-        f"Задание:\n{user_task['question']}\n\n"
-        f"Ваш ответ: {answer_letter}\n"
-        f"{result}{exp_text}",
-        reply_markup=after_answer_keyboard(bool(has_next))
-    )
+    try:
+        await callback.message.edit_text(
+            f"Задание:\n{user_task['question']}\n\n"
+            f"Ваш ответ: {answer_letter}\n{result}{exp_text}",
+            reply_markup=after_answer_keyboard(bool(has_next))
+        )
+    except Exception as e:
+        logger.warning(f"edit_text failed in answer: {e}")
     await callback.answer()
 
 
@@ -310,12 +286,28 @@ async def cb_next_task(callback: CallbackQuery):
 
     next_task = await db.get_next_unanswered(user["id"])
     if next_task:
-        await send_task_message(callback.message, next_task)
+        text = f"Задание:\n{next_task['question']}\n\nТема: {next_task['topic']}"
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=task_answer_keyboard(str(next_task["id"]), next_task["options"])
+            )
+        except:
+            await callback.message.answer(
+                text,
+                reply_markup=task_answer_keyboard(str(next_task["id"]), next_task["options"])
+            )
     else:
-        await callback.message.edit_text(
-            "Все задания на сегодня выполнены!",
-            reply_markup=main_menu()
-        )
+        try:
+            await callback.message.edit_text(
+                "Все задания на сегодня выполнены!",
+                reply_markup=main_menu()
+            )
+        except:
+            await callback.message.answer(
+                "Все задания на сегодня выполнены!",
+                reply_markup=main_menu()
+            )
     await callback.answer()
 
 
@@ -327,20 +319,17 @@ async def cb_finish_tasks(callback: CallbackQuery):
         await callback.answer("Пользователь не найден")
         return
 
-    today_tasks = await db.get_today_tasks(user["id"])
-    answered = sum(1 for t in today_tasks if t["is_correct"] is not None)
-    correct = sum(1 for t in today_tasks if t["is_correct"] == 1)
-
-    await callback.message.edit_text(
+    summary = await db.get_today_summary(user["id"])
+    pct = int(summary["correct"] / summary["answered"] * 100) if summary["answered"] else 0
+    text = (
         f"Результаты за сегодня:\n"
-        f"Всего заданий: {len(today_tasks)}\n"
-        f"Решено: {answered}\n"
-        f"Верно: {correct}\n"
-        f"Ошибок: {answered - correct}\n\n"
-        f"Точность: {int(correct/answered*100) if answered else 0}%",
-        reply_markup=main_menu()
+        f"Всего заданий: {summary['total']}\n"
+        f"Решено: {summary['answered']}\n"
+        f"Верно: {summary['correct']}\n"
+        f"Ошибок: {summary['answered'] - summary['correct']}\n"
+        f"Точность: {pct}%"
     )
-    await callback.answer()
+    await safe_edit(callback, text, main_menu())
 
 
 @router.callback_query(F.data == "stats_by_topic")
@@ -355,10 +344,7 @@ async def cb_stats_by_topic(callback: CallbackQuery):
     topics = stats.get("by_topic", {})
 
     if not topics:
-        await callback.message.edit_text(
-            "Нет данных по темам. Начните решать задания!",
-            reply_markup=main_menu()
-        )
+        await safe_edit(callback, "Нет данных по темам. Начните решать задания!", main_menu())
         await callback.answer()
         return
 
@@ -366,13 +352,9 @@ async def cb_stats_by_topic(callback: CallbackQuery):
     for topic, data in sorted(topics.items(), key=lambda x: -x[1]["errors"]):
         err_pct = int(data["errors"] / data["total"] * 100) if data["total"] else 0
         bar = "#" * (err_pct // 10) + "-" * (10 - err_pct // 10)
-        lines.append(f"{topic}:")
-        lines.append(f"  {bar} {data['errors']}/{data['total']} ошибок ({err_pct}%)")
+        lines.append(f"{topic}: {bar} {data['errors']}/{data['total']} ({err_pct}%)")
 
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=stats_keyboard()
-    )
+    await safe_edit(callback, "\n".join(lines), stats_keyboard())
     await callback.answer()
 
 
@@ -388,10 +370,7 @@ async def cb_stats_by_subject(callback: CallbackQuery):
     subjects = stats.get("by_subject", {})
 
     if not subjects:
-        await callback.message.edit_text(
-            "Нет данных по предметам. Начните решать задания!",
-            reply_markup=main_menu()
-        )
+        await safe_edit(callback, "Нет данных по предметам. Начните решать задания!", main_menu())
         await callback.answer()
         return
 
@@ -400,10 +379,7 @@ async def cb_stats_by_subject(callback: CallbackQuery):
         pct = int(data["correct"] / data["total"] * 100) if data["total"] else 0
         lines.append(f"{name}: {data['correct']}/{data['total']} ({pct}%)")
 
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=stats_keyboard()
-    )
+    await safe_edit(callback, "\n".join(lines), stats_keyboard())
     await callback.answer()
 
 
@@ -415,8 +391,18 @@ async def cb_generate_pdf(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_help")
 async def cb_show_help(callback: CallbackQuery):
-    await cmd_help(callback.message)
-    await callback.answer()
+    await safe_edit(callback,
+        "EGE-BOSS - бот для подготовки к ЕГЭ 2026\n\n"
+        "Команды:\n"
+        "/start - Начать работу\n"
+        "/tasks - Задания на сегодня\n"
+        "/stats - Статистика\n"
+        "/profile - Профиль и подписка\n"
+        "/pdf - Сгенерировать PDF с заданиями\n"
+        "/help - Помощь\n\n"
+        "Подписка дает доступ ко всем предметам и функциям.",
+        main_menu()
+    )
 
 
 # ============= PAYMENTS =============
@@ -463,57 +449,55 @@ async def successful_payment(message: Message):
 
 # ============= HELPERS =============
 
+async def safe_edit(callback: CallbackQuery, text: str, markup=None):
+    try:
+        await callback.message.edit_text(text, reply_markup=markup)
+    except Exception as e:
+        logger.warning(f"edit_text failed, sending new message: {e}")
+        await callback.message.answer(text, reply_markup=markup)
+
+
 async def show_today_tasks(telegram_id: int, target):
     user = await db.get_user(telegram_id)
     if not user:
         await target.answer("Пользователь не найден. Используйте /start")
         return
-
     if not user["selected_subject"]:
-        await target.answer(
-            "Сначала выберите предмет:",
-            reply_markup=subject_selection()
-        )
+        await target.answer("Сначала выберите предмет:", reply_markup=subject_selection())
         return
 
     has_sub = await db.check_subscription(user["id"])
     if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Оформить подписку", callback_data="show_subscription")
+        builder.button(text="Главное меню", callback_data="main_menu")
+        builder.adjust(1)
         await target.answer(
             "Для доступа к заданиям необходима подписка.",
-            reply_markup=(await subscription_required_keyboard(telegram_id))
+            reply_markup=builder.as_markup()
         )
         return
 
     today_tasks = await db.get_today_tasks(user["id"])
-
     if not today_tasks:
         await db.assign_daily_tasks(user["id"], user["selected_subject"])
         today_tasks = await db.get_today_tasks(user["id"])
 
     unanswered = [t for t in today_tasks if t["is_correct"] is None]
-
     if not unanswered:
-        correct = sum(1 for t in today_tasks if t["is_correct"] == 1)
-        total = len(today_tasks)
+        summary = await db.get_today_summary(user["id"])
         await target.answer(
             f"Все задания на сегодня выполнены!\n"
-            f"Верно: {correct}/{total}",
+            f"Верно: {summary['correct']}/{summary['total']}",
             reply_markup=main_menu()
         )
         return
 
     first = unanswered[0]
-    await send_task_message(target, first)
-
-
-async def send_task_message(target, task: dict):
-    text = (
-        f"Задание:\n{task['question']}\n\n"
-        f"Тема: {task['topic']}\n"
-    )
+    text = f"Задание:\n{first['question']}\n\nТема: {first['topic']}"
     await target.answer(
         text,
-        reply_markup=task_answer_keyboard(str(task["id"]), task["options"])
+        reply_markup=task_answer_keyboard(str(first["id"]), first["options"])
     )
 
 
@@ -527,18 +511,16 @@ async def show_stats_menu(telegram_id: int, target):
     total = stats["total"]
     correct = stats["correct"] or 0
     wrong = stats["wrong"] or 0
-
     pct = int(correct / total * 100) if total else 0
 
-    text = (
+    await target.answer(
         f"Ваша статистика:\n\n"
         f"Всего решено: {total}\n"
         f"Верно: {correct}\n"
         f"Ошибок: {wrong}\n"
-        f"Точность: {pct}%\n"
+        f"Точность: {pct}%",
+        reply_markup=stats_keyboard()
     )
-
-    await target.answer(text, reply_markup=stats_keyboard())
 
 
 async def show_profile(telegram_id: int, target):
@@ -548,29 +530,25 @@ async def show_profile(telegram_id: int, target):
         return
 
     subj = SUBJECTS.get(user["selected_subject"], "не выбран")
-
     has_sub = await db.check_subscription(user["id"])
     sub_status = "Активна" if has_sub else "Не активна"
-
     sub_end = ""
     if has_sub and user.get("subscription_end"):
         try:
-            end_date = datetime.fromisoformat(user["subscription_end"])
-            sub_end = f" до {end_date.strftime('%d.%m.%Y')}"
+            sub_end = f" до {datetime.fromisoformat(user['subscription_end']).strftime('%d.%m.%Y')}"
         except:
             pass
 
-    reminder = user["reminder_time"] if user.get("reminder_time") else DEFAULT_REMINDER
+    reminder = user["reminder_time"] or DEFAULT_REMINDER
     rem_status = "Вкл" if user.get("reminder_enabled") else "Выкл"
 
-    text = (
+    await target.answer(
         f"Профиль:\n\n"
         f"Предмет: {subj}\n"
         f"Подписка: {sub_status}{sub_end}\n"
-        f"Напоминания: {rem_status} ({reminder})\n"
+        f"Напоминания: {rem_status} ({reminder})",
+        reply_markup=profile_keyboard()
     )
-
-    await target.answer(text, reply_markup=profile_keyboard())
 
 
 async def handle_generate_pdf(telegram_id: int, target):
@@ -578,19 +556,19 @@ async def handle_generate_pdf(telegram_id: int, target):
     if not user:
         await target.answer("Пользователь не найден. Используйте /start")
         return
-
     if not user["selected_subject"]:
-        await target.answer(
-            "Сначала выберите предмет.",
-            reply_markup=subject_selection()
-        )
+        await target.answer("Сначала выберите предмет.", reply_markup=subject_selection())
         return
 
     has_sub = await db.check_subscription(user["id"])
     if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Оформить подписку", callback_data="show_subscription")
+        builder.button(text="Главное меню", callback_data="main_menu")
+        builder.adjust(1)
         await target.answer(
             "PDF-генерация доступна только по подписке.",
-            reply_markup=(await subscription_required_keyboard(telegram_id))
+            reply_markup=builder.as_markup()
         )
         return
 
@@ -600,15 +578,11 @@ async def handle_generate_pdf(telegram_id: int, target):
     weak_topics = [t["topic"] for t in topics[:3]] if topics else []
 
     if weak_topics:
-        tasks = await db.get_tasks_by_topics(
-            user["selected_subject"], weak_topics, 5
-        )
+        tasks = await db.get_tasks_by_topics(user["selected_subject"], weak_topics, 5)
     else:
         tasks = await db.get_today_tasks(user["id"])
         if not tasks:
-            tasks = await db.assign_daily_tasks(
-                user["id"], user["selected_subject"]
-            )
+            tasks = await db.assign_daily_tasks(user["id"], user["selected_subject"])
 
     if not tasks:
         await target.answer("Нет заданий для PDF.")

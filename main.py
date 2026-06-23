@@ -10,7 +10,7 @@ from config import BOT_TOKEN, REMINDER_TIMES
 from database import db
 from task_data import TASKS
 from handlers import router
-from keyboards import main_menu
+from keyboards import task_answer_keyboard
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,9 +20,17 @@ logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
+SUBJ_DATIVE = {
+    "math": "Математике", "russian": "Русскому языку",
+    "physics": "Физике", "chemistry": "Химии",
+    "english": "Английскому", "biology": "Биологии",
+    "history": "Истории", "society": "Обществознанию",
+    "informatics": "Информатике",
+}
+
 
 async def send_daily_tasks(bot: Bot, time_str: str):
-    users = await db.get_users_by_reminder_time(time_str)
+    users = await db.get_users_by_reminder(time_str)
     for user in users:
         try:
             if not user.get("selected_subject"):
@@ -30,39 +38,24 @@ async def send_daily_tasks(bot: Bot, time_str: str):
 
             today_tasks = await db.get_today_tasks(user["id"])
             if not today_tasks:
-                await db.assign_daily_tasks(user["id"], user["selected_subject"])
-                today_tasks = await db.get_today_tasks(user["id"])
-
-            if not today_tasks:
-                continue
+                today_tasks = await db.assign_daily_tasks(user["id"], user["selected_subject"])
 
             unanswered = [t for t in today_tasks if t["is_correct"] is None]
-            total_new = len(unanswered)
-
-            if total_new == 0:
+            if not unanswered:
                 continue
 
-            SUBJ_NAMES = {
-                "math": "Математике", "russian": "Русскому языку",
-                "physics": "Физике", "chemistry": "Химии",
-                "english": "Английскому", "biology": "Биологии",
-                "history": "Истории", "society": "Обществознанию",
-                "informatics": "Информатике",
-            }
-            subj_name = SUBJ_NAMES.get(user["selected_subject"], "выбранному предмету")
+            subj_name = SUBJ_DATIVE.get(user["selected_subject"], "выбранному предмету")
             await bot.send_message(
                 user["telegram_id"],
                 f"Пришло время занятий!\n"
-                f"У тебя {total_new} новых заданий по {subj_name}.\n\n"
-                f"Задание 1 из {total_new}:",
+                f"У тебя {len(unanswered)} новых заданий по {subj_name}.\n\n"
+                f"Задание 1 из {len(unanswered)}:",
             )
 
             first = unanswered[0]
-            from keyboards import task_answer_keyboard
             await bot.send_message(
                 user["telegram_id"],
-                f"Задание:\n{first['question']}\n\n"
-                f"Тема: {first['topic']}",
+                f"Задание:\n{first['question']}\n\nТема: {first['topic']}",
                 reply_markup=task_answer_keyboard(str(first["id"]), first["options"])
             )
 
@@ -83,12 +76,6 @@ def setup_scheduler(bot: Bot):
             replace_existing=True,
         )
     logger.info(f"Scheduler set up with {len(REMINDER_TIMES)} reminder times")
-
-
-async def send_test_reminder(bot: Bot):
-    from datetime import datetime
-    now = datetime.now().strftime("%H:%M")
-    logger.info(f"Test reminder check at {now}")
 
 
 async def on_startup(bot: Bot):
