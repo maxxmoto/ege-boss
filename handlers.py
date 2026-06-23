@@ -636,6 +636,7 @@ async def cb_topic_test(callback: CallbackQuery):
         await safe_edit(callback, "Сначала выбери предметы.", subject_selection([]))
         await callback.answer()
         return
+    await callback.answer()
     if len(subs) == 1:
         await topic_pick_topic(callback, subs[0], callback.message)
     else:
@@ -645,7 +646,6 @@ async def cb_topic_test(callback: CallbackQuery):
         builder.button(text="Меню", callback_data="main_menu")
         builder.adjust(1)
         await safe_edit(callback, "Выбери предмет:", builder.as_markup())
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("tt_subj:"))
@@ -694,9 +694,13 @@ async def cb_tt_topic(callback: CallbackQuery):
 async def cb_tt_gen(callback: CallbackQuery):
     _, subj, topic, cnt_str = callback.data.split(":", 3)
     count = int(cnt_str)
-    await callback.message.edit_text(f"Генерирую тест ({count} заданий)...")
-    await handle_topic_test(callback.from_user.id, callback.message, subj, topic, count)
     await callback.answer()
+    await callback.message.edit_text(f"\U0001f4dd Генерирую тест ({count} заданий)...")
+    try:
+        await handle_topic_test(callback.from_user.id, callback.message, subj, topic, count)
+    except Exception as e:
+        logger.exception("topic_test failed")
+        await callback.message.answer(f"\u274c Ошибка: {e}")
 
 
 # ═══════════════════════════════════════════
@@ -713,8 +717,13 @@ async def cb_full_variant(callback: CallbackQuery):
         await callback.answer()
         return
     if len(subs) == 1:
-        await callback.message.edit_text(f"Генерирую вариант КИМ...")
-        await handle_kim_variant(callback.from_user.id, callback.message, subs[0])
+        await callback.answer()
+        await callback.message.edit_text(f"\U0001f4dd Генерирую вариант КИМ...")
+        try:
+            await handle_kim_variant(callback.from_user.id, callback.message, subs[0])
+        except Exception as e:
+            logger.exception("kim_variant failed")
+            await callback.message.answer(f"\u274c Ошибка: {e}")
     else:
         builder = InlineKeyboardBuilder()
         for s in subs:
@@ -722,15 +731,19 @@ async def cb_full_variant(callback: CallbackQuery):
         builder.button(text="Меню", callback_data="main_menu")
         builder.adjust(1)
         await safe_edit(callback, "Выбери предмет для варианта:", builder.as_markup())
-    await callback.answer()
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("fv_subj:"))
 async def cb_fv_subj(callback: CallbackQuery):
     subj = callback.data.split(":")[1]
-    await callback.message.edit_text(f"Генерирую вариант КИМ...")
-    await handle_kim_variant(callback.from_user.id, callback.message, subj)
     await callback.answer()
+    await callback.message.edit_text(f"\U0001f4dd Генерирую вариант КИМ...")
+    try:
+        await handle_kim_variant(callback.from_user.id, callback.message, subj)
+    except Exception as e:
+        logger.exception("kim_variant failed")
+        await callback.message.answer(f"\u274c Ошибка: {e}")
 
 
 @router.callback_query(F.data == "show_help")
@@ -1125,16 +1138,9 @@ async def ask_result(target, total: int):
     vals = list(range(0, min(total + 1, 21)))
     for v in vals:
         builder.button(text=str(v), callback_data=f"result:{total}:{v}")
-    # Split into rows of 5
-    rows = [vals[i:i+5] for i in range(0, len(vals), 5)]
-    kb = InlineKeyboardBuilder()
-    for row in rows:
-        for v in row:
-            kb.button(text=str(v), callback_data=f"result:{total}:{v}")
-        kb.adjust(len(row))
-    # Actually simpler: just use adjust
+    builder.adjust(5)
     await target.answer(
-        f"Сколько заданий решил верно? (из {total})",
+        f"\U0001f3c6 Сколько заданий решил верно? (из {total})",
         reply_markup=builder.as_markup()
     )
 
@@ -1155,33 +1161,4 @@ async def cb_result(callback: CallbackQuery):
     await safe_edit(callback, text, main_menu())
 
 
-@router.callback_query(F.data.startswith("test_result:"))
-async def cb_test_result(callback: CallbackQuery):
-    _, total_str, correct_str = callback.data.split(":")
-    total, correct = int(total_str), int(correct_str)
-    wrong = total - correct
-    pct = int(correct / total * 100) if total else 0
 
-    text = (
-        f"{EMOJI['trophy']} <b>Результат теста:</b>\n\n"
-        f"Всего: {total}\n"
-        f"Верно: {correct}\n"
-        f"Ошибок: {wrong}\n"
-        f"Точность: {pct}%\n"
-    )
-    if pct >= 80:
-        text += f"\n{EMOJI['fire']} Отличный результат!"
-    elif pct >= 50:
-        text += f"\n{EMOJI['brain']} Хорошо, есть куда расти!"
-    else:
-        text += f"\n{EMOJI['rocket']} Тренируйся ещё — всё получится!"
-
-    # Save to stats (approximate: mark tasks as correct/wrong proportionally)
-    uid = callback.from_user.id
-    user = await db.get_user(uid)
-    if user:
-        # We don't have specific task IDs for the test, so save approximate stats
-        # This will be refined in future versions
-        pass
-
-    await safe_edit(callback, text, main_menu())
