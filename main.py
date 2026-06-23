@@ -6,11 +6,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import BOT_TOKEN, REMINDER_TIMES
+from config import BOT_TOKEN, REMINDER_TIMES, SUBJECT_DATIVE
 from database import db
 from task_data import TASKS
 from handlers import router
-from keyboards import task_answer_keyboard
+from keyboards import task_answer_keyboard, reply_menu
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,15 +19,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
-
-SUBJ_DATIVE = {
-    "math": "Математике", "russian": "Русскому языку",
-    "physics": "Физике", "chemistry": "Химии",
-    "english": "Английскому", "biology": "Биологии",
-    "history": "Истории", "society": "Обществознанию",
-    "informatics": "Информатике",
-}
-
 
 async def send_daily_tasks(bot: Bot, time_str: str):
     users = await db.get_users_by_reminder(time_str)
@@ -44,7 +35,7 @@ async def send_daily_tasks(bot: Bot, time_str: str):
             if not unanswered:
                 continue
 
-            subj_name = SUBJ_DATIVE.get(user["selected_subject"], "выбранному предмету")
+            subj_name = SUBJECT_DATIVE.get(user["selected_subject"], "выбранному предмету")
             await bot.send_message(
                 user["telegram_id"],
                 f"Пришло время занятий!\n"
