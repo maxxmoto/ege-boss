@@ -271,10 +271,27 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
+    async def get_topics_for_subject(self, subject_code: str) -> List[str]:
+        cursor = await self._db.execute(
+            "SELECT DISTINCT topic FROM tasks WHERE subject_code = ? AND topic != '' ORDER BY topic",
+            (subject_code,)
+        )
+        return [row["topic"] for row in await cursor.fetchall()]
+
     async def get_tasks_for_test(self, subject_code: str, count: int = 10) -> List[Dict]:
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
             (subject_code, count)
+        )
+        tasks = [dict(row) for row in await cursor.fetchall()]
+        for task in tasks:
+            task["options"] = task["options"].split("||")
+        return tasks
+
+    async def get_tasks_by_topic(self, subject_code: str, topic: str, count: int = 10) -> List[Dict]:
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE subject_code = ? AND topic = ? ORDER BY RANDOM() LIMIT ?",
+            (subject_code, topic, count)
         )
         tasks = [dict(row) for row in await cursor.fetchall()]
         for task in tasks:

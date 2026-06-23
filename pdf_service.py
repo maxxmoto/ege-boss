@@ -111,8 +111,8 @@ def _frame(pdf, x, y, w, h):
     pdf.rect(x, y, w, h)
 
 
-async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
-    """Generate KIM-format EGE PDF with framing, grid fields, answer sheets."""
+async def generate_topic_pdf(user_id: int, subject_name: str, topic: str, tasks: list) -> str:
+    """Generate topic-based PDF: framed tasks with grid fields, 2 per page, answers at end."""
     from fpdf import FPDF
 
     font_path = _find_system_font()
@@ -123,12 +123,82 @@ async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.add_font("UF", "", font_path, uni=True)
-    pdf.add_page()
-    _, page_h = pdf.w, pdf.h
     l_margin = 20
-    usable_w = 210 - 2 * l_margin  # ~170mm
+    usable_w = 170
 
-    # ── Cover page ──
+    # Cover
+    pdf.add_page()
+    pdf.set_font("UF", "", 22)
+    pdf.ln(20)
+    pdf.cell(0, 15, "ЕГЭ 2027", 0, 1, "C")
+    pdf.set_font("UF", "", 16)
+    pdf.cell(0, 10, subject_name, 0, 1, "C")
+    pdf.cell(0, 10, f"Тема: {topic}", 0, 1, "C")
+    pdf.set_font("UF", "", 12)
+    pdf.cell(0, 8, f"Количество заданий: {len(tasks)}", 0, 1, "C")
+    pdf.cell(0, 8, f"Дата: {date.today().isoformat()}", 0, 1, "C")
+
+    # Tasks: 2 per page, framed + grid field
+    for i in range(0, len(tasks), 2):
+        pdf.add_page()
+        for j in range(2):
+            if i + j >= len(tasks):
+                break
+            task = tasks[i + j]
+            num = i + j + 1
+            y0 = 15 + j * 140
+
+            # Task frame
+            _frame(pdf, l_margin, y0, usable_w, 50)
+            pdf.set_xy(l_margin + 3, y0 + 3)
+            pdf.set_font("UF", "", 11)
+            pdf.multi_cell(usable_w - 6, 5.5, f"{num}. {task['question']}")
+
+            # Options
+            oy = pdf.get_y() + 2
+            pdf.set_font("UF", "", 10)
+            for k, opt in enumerate(task["options"]):
+                pdf.set_xy(l_margin + 5, oy + k * 5)
+                pdf.cell(usable_w - 10, 5, f"{chr(65+k)}) {opt}")
+
+            # Grid field
+            gy = y0 + 53
+            _grid(pdf, l_margin, gy, usable_w, 82, step=5)
+            pdf.set_font("UF", "", 8)
+            pdf.set_xy(l_margin + usable_w - 12, gy + 82 - 4)
+            pdf.cell(10, 4, f"N{num}", 0, 0, "R")
+
+    # Answers
+    pdf.add_page()
+    pdf.set_font("UF", "", 18)
+    pdf.cell(0, 15, "ОТВЕТЫ", 0, 1, "C")
+    pdf.ln(10)
+    pdf.set_font("UF", "", 12)
+    for i, task in enumerate(tasks, 1):
+        pdf.cell(0, 9, f"{i}. {chr(65 + task['correct_answer'])}", 0, 1)
+
+    out = os.path.join(os.environ.get("DATA_DIR", str(FONTS_DIR.parent)), f"topic_{user_id}.pdf")
+    pdf.output(out)
+    return out
+
+
+async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
+    """Full KIM-format EGE variant: instruction, tasks, answer sheets, draft, answers."""
+    from fpdf import FPDF
+
+    font_path = _find_system_font()
+    if not font_path:
+        if not _download_font():
+            raise RuntimeError("Не удалось загрузить шрифт для PDF.")
+        font_path = str(FONT_PATH)
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.add_font("UF", "", font_path, uni=True)
+    l_margin = 20
+    usable_w = 170
+
+    # ── Title page ──
+    pdf.add_page()
     pdf.set_font("UF", "", 24)
     pdf.ln(30)
     pdf.cell(0, 15, "ЕГЭ 2027", 0, 1, "C")
@@ -140,88 +210,73 @@ async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
     pdf.cell(0, 8, f"Дата: {date.today().isoformat()}", 0, 1, "C")
     pdf.ln(15)
     pdf.set_font("UF", "", 10)
-    instructions = (
+    pdf.multi_cell(usable_w, 6,
         "ИНСТРУКЦИЯ ПО ВЫПОЛНЕНИЮ РАБОТЫ\n\n"
-        "Экзаменационная работа состоит из двух частей, "
-        f"включающих в себя {len(tasks)} заданий.\n"
-        "На выполнение работы отводится 3 часа 55 минут (235 минут).\n\n"
-        "Ответы к заданиям 1-? записываются в бланк ответов N 1.\n"
-        "Ответы к заданиям ?-? записываются в бланк ответов N 2.\n\n"
+        f"Экзаменационная работа состоит из {len(tasks)} заданий.\n"
+        "На выполнение отводится 3 часа 55 минут (235 минут).\n\n"
+        "Ответы записываются в бланки ответов N 1 и N 2.\n"
         "Все бланки заполняются яркими чёрными чернилами.\n"
         "Допускается использование гелевой или капиллярной ручки.\n\n"
         "Желаем успеха!"
     )
-    pdf.multi_cell(usable_w, 6, instructions)
-    pdf.ln(10)
+    pdf.ln(5)
     pdf.set_font("UF", "", 10)
     pdf.multi_cell(usable_w, 5,
-        "Заполните поля в бланках ответов:\n"
-        "  - Фамилия\n  - Имя\n  - Отчество\n"
-        "  - Номер варианта: 1\n  - Предмет: " + subject_name
+        "Фамилия _______________  Имя _______________  Отчество _______________\n"
+        f"Предмет: {subject_name}      Номер варианта: 1"
     )
 
-    # ── Tasks (2 per page, framed + grid) ──
+    # ── Tasks (2/page, framed + grid) ──
     for i in range(0, len(tasks), 2):
         pdf.add_page()
-        task_top = 15
         for j in range(2):
             if i + j >= len(tasks):
                 break
             task = tasks[i + j]
             num = i + j + 1
-            y_start = task_top + j * 135
+            y0 = 15 + j * 140
 
-            # Task frame
-            _frame(pdf, l_margin, y_start, usable_w, 55)
-            pdf.set_xy(l_margin + 2, y_start + 2)
+            _frame(pdf, l_margin, y0, usable_w, 50)
+            pdf.set_xy(l_margin + 3, y0 + 3)
             pdf.set_font("UF", "", 11)
-            pdf.multi_cell(usable_w - 4, 5.5, f"{num}. {task['question']}")
-
-            # Options
-            opt_y = pdf.get_y() + 2
+            pdf.multi_cell(usable_w - 6, 5.5, f"{num}. {task['question']}")
+            oy = pdf.get_y() + 2
             pdf.set_font("UF", "", 10)
             for k, opt in enumerate(task["options"]):
-                txt = f"{chr(65+k)}) {opt}"
-                pdf.set_xy(l_margin + 5, opt_y + k * 5)
-                pdf.cell(usable_w - 10, 5, txt)
+                pdf.set_xy(l_margin + 5, oy + k * 5)
+                pdf.cell(usable_w - 10, 5, f"{chr(65+k)}) {opt}")
 
-            # Grid field below task
-            grid_y = y_start + 58
-            _grid(pdf, l_margin, grid_y, usable_w, 72, step=5)
-
-            # Task number on the right side of grid
+            gy = y0 + 53
+            _grid(pdf, l_margin, gy, usable_w, 82, step=5)
             pdf.set_font("UF", "", 8)
-            pdf.set_xy(l_margin + usable_w - 15, grid_y + 72 - 4)
-            pdf.cell(12, 4, f"N{num}", 0, 0, "R")
+            pdf.set_xy(l_margin + usable_w - 12, gy + 82 - 4)
+            pdf.cell(10, 4, f"N{num}", 0, 0, "R")
 
     # ── Answer Sheet 1 ──
     pdf.add_page()
     pdf.set_font("UF", "", 16)
     pdf.cell(0, 12, "БЛАНК ОТВЕТОВ N 1", 0, 1, "C")
-    pdf.ln(5)
+    pdf.ln(3)
     pdf.set_font("UF", "", 9)
     pdf.multi_cell(usable_w, 5,
         "Фамилия _______________  Имя _______________  Отчество _______________"
     )
-    pdf.ln(3)
     pdf.cell(0, 5, f"Предмет: {subject_name}      Номер варианта: 1", 0, 1)
     pdf.ln(5)
-
-    # Table of answers
-    col_w = 18
-    cols = 4
-    rows_count = (len(tasks) + cols - 1) // cols
     pdf.set_font("UF", "", 10)
+    cols = 4
+    cw = 40
+    rows_count = (len(tasks) + cols - 1) // cols
     for r in range(rows_count):
+        y = pdf.get_y()
         for c in range(cols):
             idx = r * cols + c
             if idx >= len(tasks):
                 break
-            x = l_margin + c * (col_w * 2 + 2)
-            y = pdf.get_y()
-            _frame(pdf, x, y, col_w * 2, 10)
-            pdf.set_xy(x + 1, y + 1)
-            pdf.cell(col_w * 2 - 2, 8, f"{idx+1}. ___", 0, 0, "L")
+            x = l_margin + c * (cw + 2)
+            _frame(pdf, x, y, cw, 10)
+            pdf.set_xy(x + 2, y + 1)
+            pdf.cell(cw - 4, 8, f"{idx+1}. ___", 0, 0)
         pdf.ln(12)
 
     # ── Answer Sheet 2 (2 pages) ──
@@ -229,42 +284,28 @@ async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
         pdf.add_page()
         pdf.set_font("UF", "", 16)
         pdf.cell(0, 12, "БЛАНК ОТВЕТОВ N 2", 0, 1, "C")
-        pdf.ln(5)
+        pdf.ln(3)
         pdf.set_font("UF", "", 9)
         pdf.multi_cell(usable_w, 5,
             "Фамилия _______________  Имя _______________  Отчество _______________"
         )
-        pdf.ln(3)
-        _grid(pdf, l_margin, pdf.get_y(), usable_w, 240, step=5)
+        _grid(pdf, l_margin, pdf.get_y(), usable_w, 245, step=5)
 
     # ── Draft ──
     pdf.add_page()
     pdf.set_font("UF", "", 16)
     pdf.cell(0, 12, "ЧЕРНОВИК", 0, 1, "C")
-    pdf.ln(3)
-    _grid(pdf, l_margin, pdf.get_y(), usable_w, 255, step=5)
+    _grid(pdf, l_margin, pdf.get_y() + 3, usable_w, 260, step=5)
 
-    # ── Answer Key ──
+    # ── Answers ──
     pdf.add_page()
     pdf.set_font("UF", "", 18)
     pdf.cell(0, 15, "ОТВЕТЫ", 0, 1, "C")
     pdf.ln(10)
     pdf.set_font("UF", "", 12)
     for i, task in enumerate(tasks, 1):
-        letter = chr(65 + task["correct_answer"])
-        pdf.cell(0, 9, f"{i}. {letter}", 0, 1)
+        pdf.cell(0, 9, f"{i}. {chr(65 + task['correct_answer'])}", 0, 1)
 
-    pdf.ln(15)
-    pdf.set_font("UF", "", 10)
-    pdf.multi_cell(usable_w, 6,
-        "Проверьте свои ответы в боте, чтобы получить "
-        "персональную статистику и рекомендации."
-    )
-
-    out = os.path.join(os.environ.get("DATA_DIR", str(FONTS_DIR.parent)), f"ege_{user_id}.pdf")
+    out = os.path.join(os.environ.get("DATA_DIR", str(FONTS_DIR.parent)), f"kim_{user_id}.pdf")
     pdf.output(out)
     return out
-
-
-# Keep old name for backward compat
-generate_pdf = generate_kim_pdf

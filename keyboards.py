@@ -17,10 +17,10 @@ def reply_menu(is_subscribed: bool = False):
 def main_menu():
     builder = InlineKeyboardBuilder()
     builder.button(text="Задания на сегодня", callback_data="today_tasks")
-    builder.button(text="Тест-режим", callback_data="test_mode")
+    builder.button(text="Тест по теме", callback_data="topic_test")
+    builder.button(text="Вариант КИМ", callback_data="full_variant")
     builder.button(text="Статистика", callback_data="show_stats")
     builder.button(text="Профиль", callback_data="show_profile")
-    builder.button(text="PDF c вариантом", callback_data="generate_pdf")
     builder.button(text="Помощь", callback_data="show_help")
     builder.adjust(1)
     return builder.as_markup()
