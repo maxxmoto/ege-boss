@@ -65,7 +65,7 @@ async def cmd_start(message: Message):
         message.from_user.first_name, message.from_user.last_name
     )
     user = await db.get_user(uid)
-    hi_path = os.path.join(os.path.dirname(__file__), "fonts", "hi.png")
+    hi_path = os.path.join(os.path.dirname(__file__), "fonts", "hello.png")
 
     caption = (
         f"{EMOJI['wave']} <b>Привет, {message.from_user.first_name}!</b>\n"
