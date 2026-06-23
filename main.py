@@ -42,17 +42,18 @@ async def send_daily_tasks(bot: Bot, time_str: str):
             if total_new == 0:
                 continue
 
-            from handlers import send_task_message
-            from aiogram.types import Message
-
+            SUBJ_NAMES = {
+                "math": "Математике", "russian": "Русскому языку",
+                "physics": "Физике", "chemistry": "Химии",
+                "english": "Английскому", "biology": "Биологии",
+                "history": "Истории", "society": "Обществознанию",
+                "informatics": "Информатике",
+            }
+            subj_name = SUBJ_NAMES.get(user["selected_subject"], "выбранному предмету")
             await bot.send_message(
                 user["telegram_id"],
                 f"Пришло время занятий!\n"
-                f"У тебя {total_new} новых заданий по "
-                f"{dict(math='Математике', russian='Русскому языку', physics='Физике',
-                        chemistry='Химии', english='Английскому', biology='Биологии',
-                        history='Истории', society='Обществознанию', informatics='Информатике')
-                    .get(user['selected_subject'], 'выбранному предмету')}.\n\n"
+                f"У тебя {total_new} новых заданий по {subj_name}.\n\n"
                 f"Задание 1 из {total_new}:",
             )
 
