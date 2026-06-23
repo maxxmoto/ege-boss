@@ -12,7 +12,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import (
     SUBJECTS, SUBJECT_DATIVE, STAR_PRICES, PRICE_LABELS,
-    ADMIN_IDS, DAILY_TASK_COUNT, DEFAULT_REMINDER, SUBSCRIPTION_INFO
+    ADMIN_IDS, FREE_TASK_COUNT, DAILY_TASK_COUNT, DEFAULT_REMINDER,
+    FREE_INFO, SUBSCRIPTION_INFO
 )
 from database import db
 from keyboards import (
@@ -344,6 +345,7 @@ async def cb_next_task(callback: CallbackQuery):
         await callback.answer("Пользователь не найден")
         return
 
+    has_sub = await db.check_subscription(user["id"])
     next_task = await db.get_next_unanswered(user["id"])
     if next_task:
         text = (
@@ -361,7 +363,7 @@ async def cb_next_task(callback: CallbackQuery):
                 reply_markup=task_answer_keyboard(str(next_task["id"]), next_task["options"])
             )
     else:
-        await finish_tasks(callback.message, user["id"])
+        await finish_tasks(callback.message, user["id"], has_sub)
     await callback.answer()
 
 
@@ -372,7 +374,8 @@ async def cb_finish_tasks(callback: CallbackQuery):
     if not user:
         await callback.answer("Пользователь не найден")
         return
-    await finish_tasks(callback.message, user["id"])
+    has_sub = await db.check_subscription(user["id"])
+    await finish_tasks(callback.message, user["id"], has_sub)
     await callback.answer()
 
 
@@ -520,7 +523,7 @@ async def safe_edit(callback: CallbackQuery, text: str, markup=None):
         await callback.message.answer(text, reply_markup=markup, parse_mode="HTML")
 
 
-async def finish_tasks(target, user_db_id: int):
+async def finish_tasks(target, user_db_id: int, has_sub: bool = True):
     summary = await db.get_today_summary(user_db_id)
     pct = int(summary["correct"] / summary["answered"] * 100) if summary["answered"] else 0
 
@@ -541,58 +544,76 @@ async def finish_tasks(target, user_db_id: int):
         f"{mood}"
     )
 
+    if not has_sub:
+        text += (
+            f"\n\n{EMOJI['rocket']} <b>Хочешь больше?</b>\n"
+            f"В Pro: 5 заданий в день, PDF, статистика по темам и напоминания!"
+        )
+
+    markup = main_menu()
+
     if hasattr(target, "edit_text"):
         try:
-            await target.edit_text(text, reply_markup=main_menu(), parse_mode="HTML")
+            if not has_sub:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="Оформить Pro", callback_data="show_subscription_info")
+                builder.button(text="Меню", callback_data="main_menu")
+                builder.adjust(1)
+                markup = builder.as_markup()
+            await target.edit_text(text, reply_markup=markup, parse_mode="HTML")
             return
         except:
             pass
 
-    await target.answer(text, reply_markup=main_menu(), parse_mode="HTML")
+    if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Оформить Pro", callback_data="show_subscription_info")
+        builder.button(text="Меню", callback_data="main_menu")
+        builder.adjust(1)
+        markup = builder.as_markup()
+
+    await target.answer(text, reply_markup=markup, parse_mode="HTML")
 
 
 async def show_today_tasks(telegram_id: int, target):
     user = await db.get_user(telegram_id)
     if not user:
-        await target.answer(
-            f"{EMOJI['wave']} Привет! Напиши /start, чтобы начать."
-        )
+        await target.answer(f"{EMOJI['wave']} Привет! Напиши /start, чтобы начать.")
         return
     if not user["selected_subject"]:
         await target.answer(
-            f"{EMOJI['brain']} Сначала выбери предмет:",
-            reply_markup=subject_selection()
+            f"{EMOJI['brain']} Сначала выбери предмет:", reply_markup=subject_selection()
         )
         return
 
     has_sub = await db.check_subscription(user["id"])
-    if not has_sub:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Подробнее о подписке", callback_data="show_subscription_info")
-        builder.button(text="Меню", callback_data="main_menu")
-        builder.adjust(1)
-        await target.answer(
-            f"{EMOJI['sub']} Для доступа к заданиям нужна подписка.\n"
-            f"Всего от 50 звёзд в месяц!",
-            reply_markup=builder.as_markup()
-        )
-        return
+    task_limit = DAILY_TASK_COUNT if has_sub else FREE_TASK_COUNT
 
     today_tasks = await db.get_today_tasks(user["id"])
     if not today_tasks:
-        await db.assign_daily_tasks(user["id"], user["selected_subject"])
+        await db.assign_daily_tasks(user["id"], user["selected_subject"], count=task_limit)
         today_tasks = await db.get_today_tasks(user["id"])
 
     unanswered = [t for t in today_tasks if t["is_correct"] is None]
+
     if not unanswered:
         summary = await db.get_today_summary(user["id"])
         pct = int(summary["correct"] / summary["total"] * 100) if summary["total"] else 0
         mood = EMOJI["trophy"] if pct >= 80 else EMOJI["fire"]
-        await target.answer(
-            f"{mood} Все задания на сегодня выполнены!\n"
-            f"Верно: {summary['correct']}/{summary['total']} ({pct}%)",
-            reply_markup=main_menu()
-        )
+
+        msg = f"{mood} Все задания на сегодня выполнены!\nВерно: {summary['correct']}/{summary['total']} ({pct}%)"
+        if not has_sub:
+            msg += (
+                f"\n\n{EMOJI['rocket']} Хочешь больше? В Pro — 5 заданий в день, "
+                f"статистика по темам и PDF с вариантом!"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="Оформить Pro", callback_data="show_subscription_info")
+            builder.button(text="Меню", callback_data="main_menu")
+            builder.adjust(1)
+            await target.answer(msg, reply_markup=builder.as_markup())
+        else:
+            await target.answer(msg, reply_markup=main_menu())
         return
 
     subj_name = SUBJECTS.get(user["selected_subject"], "")
@@ -600,11 +621,14 @@ async def show_today_tasks(telegram_id: int, target):
     done = len(today_tasks) - len(unanswered)
     total = len(today_tasks)
 
+    header = f"{EMOJI['book']} <b>{subj_name}</b>"
+    if not has_sub:
+        header += f" ({EMOJI['star']} бесплатно {done}/{total})"
+    else:
+        header += f" ({done}/{total})"
+
     await target.answer(
-        f"{EMOJI['book']} <b>{subj_name}</b>\n"
-        f"Прогресс: {done}/{total}\n\n"
-        f"<b>Задание:</b>\n{first['question']}\n\n"
-        f"Тема: {first['topic']}",
+        f"{header}\n\n<b>Задание:</b>\n{first['question']}\n\nТема: {first['topic']}",
         reply_markup=task_answer_keyboard(str(first["id"]), first["options"]),
         parse_mode="HTML"
     )
@@ -617,16 +641,6 @@ async def show_stats_menu(telegram_id: int, target):
         return
 
     has_sub = await db.check_subscription(user["id"])
-    if not has_sub:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Подписка", callback_data="show_subscription_info")
-        builder.adjust(1)
-        await target.answer(
-            f"{EMOJI['chart']} Статистика доступна по подписке.",
-            reply_markup=builder.as_markup()
-        )
-        return
-
     stats = await db.get_stats(user["id"])
     total = stats["total"]
     correct = stats["correct"] or 0
@@ -635,21 +649,35 @@ async def show_stats_menu(telegram_id: int, target):
 
     if total == 0:
         await target.answer(
-            f"{EMOJI['chart']} Пока нет статистики.\n"
-            f"Начни решать задания!",
-            reply_markup=stats_keyboard()
+            f"{EMOJI['chart']} Пока нет статистики.\nНачни решать задания!",
+            reply_markup=main_menu()
         )
         return
 
-    await target.answer(
+    # Free: basic stats only
+    base = (
         f"{EMOJI['chart']} <b>Твоя статистика:</b>\n\n"
         f"Всего решено: {total}\n"
         f"Верно: {correct} {EMOJI['check']}\n"
         f"Ошибок: {wrong} {EMOJI['cross']}\n"
-        f"Точность: {pct}%\n\n"
-        f"Подробнее \u2193",
-        reply_markup=stats_keyboard(),
-        parse_mode="HTML"
+        f"Точность: {pct}%\n"
+    )
+
+    if not has_sub:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Полная статистика в Pro", callback_data="show_subscription_info")
+        builder.button(text="Меню", callback_data="main_menu")
+        builder.adjust(1)
+        await target.answer(
+            base + f"\n{EMOJI['star']} В Pro — статистика по темам и предметам!",
+            reply_markup=builder.as_markup(), parse_mode="HTML"
+        )
+        return
+
+    # Pro: detailed stats
+    await target.answer(
+        base + "\nПодробнее \u2193",
+        reply_markup=stats_keyboard(), parse_mode="HTML"
     )
 
 
@@ -673,11 +701,19 @@ async def show_profile(telegram_id: int, target):
     reminder = user["reminder_time"] or DEFAULT_REMINDER
     rem_status = f"{EMOJI['bell']} Вкл" if user.get("reminder_enabled") else "Выкл"
 
+    limits = ""
+    if not has_sub:
+        limits = (
+            f"\n{EMOJI['star']} <b>Бесплатно:</b> 1 задание/день\n"
+            f"{EMOJI['rocket']} <b>Pro:</b> 5 заданий + PDF + статистика + напоминания\n"
+        )
+
     await target.answer(
         f"{EMOJI['settings']} <b>Профиль</b>\n\n"
         f"{EMOJI['book']} Предмет: {subj}\n"
         f"{EMOJI['sub']} Подписка: {sub_status}{sub_end}\n"
-        f"{EMOJI['bell']} Напоминания: {rem_status} ({reminder})\n",
+        f"{EMOJI['bell']} Напоминания: {rem_status} ({reminder})\n"
+        f"{limits}",
         reply_markup=profile_keyboard(has_sub),
         parse_mode="HTML"
     )
@@ -698,11 +734,15 @@ async def handle_generate_pdf(telegram_id: int, target):
     has_sub = await db.check_subscription(user["id"])
     if not has_sub:
         builder = InlineKeyboardBuilder()
-        builder.button(text="Подписка", callback_data="show_subscription_info")
+        builder.button(text="Оформить Pro", callback_data="show_subscription_info")
+        builder.button(text="Меню", callback_data="main_menu")
         builder.adjust(1)
         await target.answer(
-            f"{EMOJI['pdf']} PDF-генерация доступна по подписке.",
-            reply_markup=builder.as_markup()
+            f"{EMOJI['pdf']} <b>PDF доступен в Pro</b>\n\n"
+            f"\u2022 Персональная подборка твоих ошибок\n"
+            f"\u2022 Ответы в конце файла\n"
+            f"\u2022 Можно распечатать и решать офлайн",
+            reply_markup=builder.as_markup(), parse_mode="HTML"
         )
         return
 

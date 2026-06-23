@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, date, timedelta
 from functools import lru_cache
 from typing import Optional, Dict, List, Any
-from config import DATABASE_PATH, DAILY_TASK_COUNT
+from config import DATABASE_PATH, DAILY_TASK_COUNT, FREE_TASK_COUNT
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +239,7 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
-    async def assign_daily_tasks(self, user_db_id: int, subject_code: str) -> List[Dict]:
+    async def assign_daily_tasks(self, user_db_id: int, subject_code: str, count: int = DAILY_TASK_COUNT) -> List[Dict]:
         today = date.today().isoformat()
 
         cursor = await self._db.execute(
@@ -252,14 +252,14 @@ class Database:
             """SELECT * FROM tasks WHERE subject_code = ? AND id NOT IN (
                    SELECT task_id FROM user_tasks WHERE user_id = ? AND assigned_date = ?
                ) ORDER BY RANDOM() LIMIT ?""",
-            (subject_code, user_db_id, today, DAILY_TASK_COUNT)
+            (subject_code, user_db_id, today, count)
         )
         tasks = [dict(row) for row in await cursor.fetchall()]
 
-        if len(tasks) < DAILY_TASK_COUNT:
+        if len(tasks) < count:
             cursor = await self._db.execute(
                 "SELECT * FROM tasks WHERE subject_code = ? ORDER BY RANDOM() LIMIT ?",
-                (subject_code, DAILY_TASK_COUNT - len(tasks))
+                (subject_code, count - len(tasks))
             )
             tasks.extend([dict(row) for row in await cursor.fetchall()])
 
