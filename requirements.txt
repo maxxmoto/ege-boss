@@ -1,5 +1,6 @@
 aiogram
 aiosqlite
+aiohttp
 apscheduler
 fpdf2
 python-dotenv

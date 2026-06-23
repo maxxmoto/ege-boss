@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 
 from aiogram import Bot, Dispatcher
@@ -20,6 +21,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
+
+# ── Health check server (keeps hosting alive during conflict retries) ──
+async def health_server():
+    """Simple HTTP server that responds 200 OK to keep hosting happy."""
+    try:
+        import aiohttp
+        from aiohttp import web
+        app = web.Application()
+        async def health(request):
+            return web.Response(text="ok", status=200)
+        app.router.add_get("/", health)
+        app.router.add_get("/health", health)
+        port = int(os.environ.get("PORT", 8080))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"Health server started on port {port}")
+    except ImportError:
+        logger.info("aiohttp not installed, health server disabled")
+    except Exception as e:
+        logger.warning(f"Health server failed: {e}")
 
 async def send_daily_tasks(bot: Bot, time_str: str):
     users = await db.get_users_by_reminder(time_str)
@@ -71,10 +94,11 @@ def setup_scheduler(bot: Bot):
 
 
 async def on_startup(bot: Bot):
+    # Start health check server FIRST — before anything else
+    asyncio.create_task(health_server())
     await db.connect()
     await db.seed_subjects()
     await db.seed_tasks(TASKS)
-    # Font check in background — don't block startup
     asyncio.create_task(asyncio.to_thread(ensure_font))
     setup_scheduler(bot)
     scheduler.start()
