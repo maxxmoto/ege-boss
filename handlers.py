@@ -651,37 +651,46 @@ async def cb_topic_test(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("tt_subj:"))
 async def cb_tt_subj(callback: CallbackQuery):
     subj = callback.data.split(":")[1]
-    await topic_pick_topic(callback, subj, callback.message)
     await callback.answer()
+    await topic_pick_topic(callback, subj, callback.message)
 
 
 async def topic_pick_topic(target, subject_code: str, msg=None):
     topics = await db.get_topics_for_subject(subject_code)
     if not topics:
         txt = "Нет тем для этого предмета."
-        await (msg or target).answer(txt)
+        if msg:
+            await msg.answer(txt)
+        else:
+            await target.answer(txt)
         return
     builder = InlineKeyboardBuilder()
-    for t in topics:
-        builder.button(text=t, callback_data=f"tt_topic:{subject_code}:{t}")
+    for i, t in enumerate(topics):
+        builder.button(text=t, callback_data=f"topic:{subject_code}:{i}")
     builder.button(text="Меню", callback_data="main_menu")
     builder.adjust(2)
     txt = f"Выбери тему ({SUBJECTS[subject_code]}):"
     if msg:
-        try:
-            await msg.edit_text(txt, reply_markup=builder.as_markup())
-        except:
-            await target.answer(txt, reply_markup=builder.as_markup())
+        await msg.edit_text(txt, reply_markup=builder.as_markup())
     else:
         await target.answer(txt, reply_markup=builder.as_markup())
+    # Store topics for topic index lookup
+    return topics
 
 
-@router.callback_query(F.data.startswith("tt_topic:"))
+@router.callback_query(F.data.startswith("topic:"))
 async def cb_tt_topic(callback: CallbackQuery):
-    _, subj, topic = callback.data.split(":", 2)
+    _, subj, idx_str = callback.data.split(":", 2)
+    idx = int(idx_str)
+    await callback.answer()
+    topics = await db.get_topics_for_subject(subj)
+    if idx >= len(topics):
+        await safe_edit(callback, "Тема не найдена.", main_menu())
+        return
+    topic = topics[idx]
     builder = InlineKeyboardBuilder()
     for cnt in [5, 10, 15, 20]:
-        builder.button(text=f"{cnt}", callback_data=f"tt_gen:{subj}:{topic}:{cnt}")
+        builder.button(text=f"{cnt}", callback_data=f"tt_go:{subj}:{idx}:{cnt}")
     builder.button(text="Меню", callback_data="main_menu")
     builder.adjust(4)
     await safe_edit(callback,
@@ -690,10 +699,16 @@ async def cb_tt_topic(callback: CallbackQuery):
         builder.as_markup())
 
 
-@router.callback_query(F.data.startswith("tt_gen:"))
+@router.callback_query(F.data.startswith("tt_go:"))
 async def cb_tt_gen(callback: CallbackQuery):
-    _, subj, topic, cnt_str = callback.data.split(":", 3)
+    _, subj, idx_str, cnt_str = callback.data.split(":", 3)
+    idx = int(idx_str)
     count = int(cnt_str)
+    topics = await db.get_topics_for_subject(subj)
+    if idx >= len(topics):
+        await safe_edit(callback, "Тема не найдена.", main_menu())
+        return
+    topic = topics[idx]
     await callback.answer()
     await callback.message.edit_text(f"\U0001f4dd Генерирую тест ({count} заданий)...")
     try:
