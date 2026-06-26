@@ -15,18 +15,22 @@ def _load_env_file(path: str) -> bool:
     if not raw:
         return False
     
-    # Try as plain text first
-    try:
-        text = raw.decode("utf-8").strip()
-    except:
-        text = ""
+    text = ""
     
-    # If not plain text, try Base64 decode
+    # Try Base64 first (hosting file manager may encode files)
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8").strip()
+        if "=" in decoded and len(decoded) < 500:
+            text = decoded
+    except:
+        pass
+    
+    # If not Base64, try as plain text
     if not text or "=" not in text:
         try:
-            decoded = base64.b64decode(raw).decode("utf-8").strip()
-            if "=" in decoded:
-                text = decoded
+            t = raw.decode("utf-8").strip()
+            if "=" in t:
+                text = t
         except:
             pass
     
