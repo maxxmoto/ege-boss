@@ -33,7 +33,7 @@ _SUBJECT_IMAGES = {
     "math": "math.jfif",
     "russian": "russ.jfif",
     "physics": "fiz.jfif",
-    "informatics": "infor.jfif",
+    "informatics": "inf.jfif",
 }
 
 _SUBJECT_DESCRIPTIONS = {
@@ -492,7 +492,7 @@ async def cb_show_profile(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_subscription_info")
 async def cb_show_sub_info(callback: CallbackQuery):
-    img_path = os.path.join(_IMAGES_DIR, "protar.jfif")
+    img_path = os.path.join(_IMAGES_DIR, "pro.jfif")
     await callback.answer()
     if os.path.exists(img_path):
         try:
