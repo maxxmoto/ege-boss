@@ -55,7 +55,19 @@ _loaded = _load_env_file(".env")
 if not _loaded:
     _loaded = _load_env_file(".env.example")
 if not _loaded:
-    logger.info("No .env/.env.example — using system env vars")
+    logger.info("No .env file — using fallback")
+
+# Fallback: Base64-encoded token for hosting (survives git clean clone)
+_FALLBACK_TOKEN_B64 = "Qk9UX1RPS0VOID0gODkzODQ4MTUwNTpBQUhZYXJ3R2MzMWJrZnBqa1l1NE1yTzFlTmVMdWxGaXlDWQ=="
+try:
+    _fd = base64.b64decode(_FALLBACK_TOKEN_B64).decode("utf-8").strip()
+    if "=" in _fd:
+        _, _, _fv = _fd.partition("=")
+        _fv = _fv.strip()
+        if _fv and not os.getenv("BOT_TOKEN", ""):
+            os.environ["BOT_TOKEN"] = _fv
+except:
+    pass
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 if BOT_TOKEN:
