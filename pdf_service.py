@@ -236,20 +236,34 @@ async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
             num = i + j + 1
             y0 = 15 + j * 140
 
-            _frame(pdf, l_margin, y0, usable_w, 50)
+            # Check if short-answer (empty options)
+            opts = task.get("options", [])
+            is_short = not opts or (len(opts) == 1 and opts[0] == "")
+
+            # Task frame — adjust height based on content
+            frame_h = 50 if not is_short else 45
+            _frame(pdf, l_margin, y0, usable_w, frame_h)
             pdf.set_xy(l_margin + 3, y0 + 3)
             pdf.set_font("UF", "", 11)
             pdf.multi_cell(usable_w - 6, 5.5, f"{num}. {task['question']}")
-            oy = pdf.get_y() + 2
-            pdf.set_font("UF", "", 10)
-            for k, opt in enumerate(task["options"]):
-                pdf.set_xy(l_margin + 5, oy + k * 5)
-                pdf.cell(usable_w - 10, 5, f"{chr(65+k)}) {opt}")
 
-            gy = y0 + 53
-            _grid(pdf, l_margin, gy, usable_w, 82, step=5)
+            if not is_short:
+                oy = pdf.get_y() + 2
+                pdf.set_font("UF", "", 10)
+                for k, opt in enumerate(opts):
+                    if opt:
+                        pdf.set_xy(l_margin + 5, oy + k * 5)
+                        pdf.cell(usable_w - 10, 5, f"{chr(65+k)}) {opt}")
+            else:
+                pdf.set_xy(l_margin + 5, pdf.get_y() + 3)
+                pdf.set_font("UF", "", 9)
+                pdf.cell(usable_w - 10, 5, "[Короткий ответ]")
+
+            # Grid field below task
+            gy = y0 + frame_h + 3
+            _grid(pdf, l_margin, gy, usable_w, 72, step=5)
             pdf.set_font("UF", "", 8)
-            pdf.set_xy(l_margin + usable_w - 12, gy + 82 - 4)
+            pdf.set_xy(l_margin + usable_w - 12, gy + 72 - 4)
             pdf.cell(10, 4, f"N{num}", 0, 0, "R")
 
     # ── Answer Sheet 1 ──
@@ -304,7 +318,12 @@ async def generate_kim_pdf(user_id: int, subject_name: str, tasks: list) -> str:
     pdf.ln(10)
     pdf.set_font("UF", "", 12)
     for i, task in enumerate(tasks, 1):
-        pdf.cell(0, 9, f"{i}. {chr(65 + task['correct_answer'])}", 0, 1)
+        opts = task.get("options", [])
+        is_short = not opts or (len(opts) == 1 and opts[0] == "")
+        if is_short:
+            pdf.cell(0, 9, f"{i}. {task['correct_answer']}", 0, 1)
+        else:
+            pdf.cell(0, 9, f"{i}. {chr(65 + task['correct_answer'])}", 0, 1)
 
     out = os.path.join(os.environ.get("DATA_DIR", str(FONTS_DIR.parent)), f"kim_{user_id}.pdf")
     pdf.output(out)

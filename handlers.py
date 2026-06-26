@@ -1225,11 +1225,24 @@ async def handle_kim_variant(telegram_id: int, target, subject_code: str):
         await target.answer("Напиши /start, чтобы начать.")
         return
     subject_name = SUBJECTS[subject_code]
-    count = 10
-    tasks = await db.get_tasks_for_test(subject_code, count)
+    
+    # Real EGE task counts per subject
+    task_counts = {
+        "math": 19, "russian": 27, "physics": 30, "chemistry": 34,
+        "biology": 28, "history": 21, "society": 25, "english": 38,
+        "informatics": 27
+    }
+    count = task_counts.get(subject_code, 15)
+    
+    tasks = await db.get_tasks_for_test(subject_code, count * 2)
     if not tasks:
         await target.answer("Недостаточно заданий.")
         return
+    
+    # Sort by task ID for proper EGE order, then take needed count
+    tasks.sort(key=lambda t: t.get("id", ""))
+    tasks = tasks[:count]
+    
     filepath = await generate_kim_pdf(telegram_id, subject_name, tasks)
     doc = FSInputFile(filepath)
     await target.answer_document(
