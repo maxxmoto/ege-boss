@@ -77,8 +77,8 @@ WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook")
 PORT = int(os.environ.get("PORT", 8080))
 
 async def main():
-    if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА":
-        logger.error("Please set your BOT_TOKEN in config.py or environment variable")
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not set! Set it via environment variable or .env file")
         return
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
