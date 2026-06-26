@@ -1,7 +1,15 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+import logging
+logger = logging.getLogger(__name__)
+
+# Try loading .env first, then .env.example as fallback
+env_loaded = load_dotenv()
+if not env_loaded:
+    env_loaded = load_dotenv(".env.example")
+if not env_loaded:
+    logger.warning("No .env or .env.example found — using system env vars")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DATABASE_PATH = "data/bot.db"
