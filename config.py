@@ -1,17 +1,63 @@
 import os
-from dotenv import load_dotenv
-
+import base64
 import logging
+
 logger = logging.getLogger(__name__)
 
-# Try loading .env first, then .env.example as fallback
-env_loaded = load_dotenv()
-if not env_loaded:
-    env_loaded = load_dotenv(".env.example")
-if not env_loaded:
-    logger.warning("No .env or .env.example found — using system env vars")
+def _load_env_file(path: str) -> bool:
+    """Load .env file, handling both plain text and Base64-encoded content."""
+    if not os.path.exists(path):
+        return False
+    
+    with open(path, "rb") as f:
+        raw = f.read().strip()
+    
+    if not raw:
+        return False
+    
+    # Try as plain text first
+    try:
+        text = raw.decode("utf-8").strip()
+    except:
+        text = ""
+    
+    # If not plain text, try Base64 decode
+    if not text or "=" not in text:
+        try:
+            decoded = base64.b64decode(raw).decode("utf-8").strip()
+            if "=" in decoded:
+                text = decoded
+        except:
+            pass
+    
+    # Parse KEY=VALUE lines
+    loaded = False
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip("\"'")
+            os.environ[key] = val
+            loaded = True
+    
+    return loaded
+
+
+# .env → .env.example → system env
+_loaded = _load_env_file(".env")
+if not _loaded:
+    _loaded = _load_env_file(".env.example")
+if not _loaded:
+    logger.info("No .env/.env.example — using system env vars")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+if BOT_TOKEN:
+    logger.info(f"BOT_TOKEN loaded (prefix: {BOT_TOKEN[:10]}...)")
+else:
+    logger.warning("BOT_TOKEN is empty!")
 DATABASE_PATH = "data/bot.db"
 ADMIN_IDS = [903104535]
 
