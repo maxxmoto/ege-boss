@@ -24,8 +24,76 @@ from keyboards import (
     confirm_subscription_keyboard
 )
 from pdf_service import generate_topic_pdf, generate_kim_pdf
+from task_data import TASKS as _TASKS
 
 logger = logging.getLogger(__name__)
+
+# Subject card image mapping
+_SUBJECT_IMAGES = {
+    "math": "math.jfif",
+    "russian": "russ.jfif",
+    "physics": "fiz.jfif",
+    "informatics": "infor.jfif",
+}
+
+_SUBJECT_DESCRIPTIONS = {
+    "math": (
+        "Математика (профильный уровень)\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: короткий ответ\n"
+        "Разделы: алгебра, геометрия, теория вероятностей"
+    ),
+    "russian": (
+        "Русский язык\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: орфография, пунктуация, грамматика"
+    ),
+    "physics": (
+        "Физика\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: расчётные задачи\n"
+        "Разделы: механика, термодинамика, оптика"
+    ),
+    "chemistry": (
+        "Химия\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: неорганическая, органическая химия"
+    ),
+    "english": (
+        "Английский язык\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: грамматика, лексика, чтение"
+    ),
+    "biology": (
+        "Биология\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: ботаника, зоология, анатомия"
+    ),
+    "history": (
+        "История\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: Древняя Русь, Российская империя, XX век"
+    ),
+    "society": (
+        "Обществознание\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: тестовые задания\n"
+        "Разделы: экономика, политика, право"
+    ),
+    "informatics": (
+        "Информатика\n\n"
+        "Заданий в базе: {count}\n"
+        "Формат ЕГЭ: короткий ответ\n"
+        "Разделы: алгоритмы, программирование, логика"
+    ),
+}
+
+_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 router = Router()
 
 # Track users in short-answer mode: {telegram_id: (user_task_id, correct_answer)}
@@ -190,7 +258,7 @@ async def cmd_pdf(message: Message):
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(
+    help_text = (
         f"{EMOJI['help_em']} <b>ЕГЭ БОСС — справка</b>\n\n"
         f"{EMOJI['menu']} <b>Меню снизу</b> — быстрые кнопки:\n"
         f"\u2022 Задания — получить задания на сегодня\n"
@@ -200,9 +268,16 @@ async def cmd_help(message: Message):
         f"{EMOJI['pdf']} <b>PDF</b> — в меню можно скачать "
         f"персональный вариант со своими ошибками\n\n"
         f"{EMOJI['rocket']} <b>Подписка</b> — открывает все предметы, "
-        f"статистику, PDF и напоминания",
-        reply_markup=main_menu()
+        f"статистику, PDF и напоминания"
     )
+    img_path = os.path.join(_IMAGES_DIR, "spravka.jfif")
+    if os.path.exists(img_path):
+        try:
+            await message.answer_photo(FSInputFile(img_path), caption=help_text, reply_markup=main_menu(), parse_mode="HTML")
+            return
+        except:
+            pass
+    await message.answer(help_text, reply_markup=main_menu())
 
 # ── Admin commands ────────────────────────────
 
@@ -342,18 +417,29 @@ async def cb_toggle_subject(callback: CallbackQuery):
             return
         await db.remove_subject(uid, subject_code)
         current.remove(subject_code)
+        await safe_edit(callback,
+            f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
+            f"Твои: {', '.join(SUBJECTS[s] for s in current) if current else 'пока ничего'}",
+            subject_selection(current)
+        )
     else:
         ok = await db.add_subject(uid, subject_code)
         if not ok:
             await callback.answer(f"Максимум {MAX_SUBJECTS} предмета", show_alert=True)
             return
         current.append(subject_code)
-
-    await safe_edit(callback,
-        f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
-        f"Твои: {', '.join(SUBJECTS[s] for s in current) if current else 'пока ничего'}",
-        subject_selection(current)
-    )
+        await callback.answer()
+        # Send subject card as new message
+        await send_subject_card(uid, subject_code, callback.message)
+        # Update selection UI
+        try:
+            await callback.message.edit_text(
+                f"{EMOJI['brain']} Выбери предметы (до {MAX_SUBJECTS}):\n"
+                f"Твои: {', '.join(SUBJECTS[s] for s in current) if current else 'пока ничего'}",
+                reply_markup=subject_selection(current)
+            )
+        except:
+            pass
 
 
 @router.callback_query(F.data == "subjects_done")
@@ -406,6 +492,14 @@ async def cb_show_profile(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_subscription_info")
 async def cb_show_sub_info(callback: CallbackQuery):
+    img_path = os.path.join(_IMAGES_DIR, "protar.jfif")
+    await callback.answer()
+    if os.path.exists(img_path):
+        try:
+            await callback.message.answer_photo(FSInputFile(img_path), caption=SUBSCRIPTION_INFO, reply_markup=subscription_keyboard(), parse_mode="HTML")
+            return
+        except:
+            pass
     await safe_edit(callback, SUBSCRIPTION_INFO, subscription_keyboard())
 
 
@@ -841,7 +935,8 @@ async def cb_fv_subj(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_help")
 async def cb_show_help(callback: CallbackQuery):
-    await safe_edit(callback,
+    await callback.answer()
+    help_text = (
         f"{EMOJI['help_em']} <b>ЕГЭ БОСС — справка</b>\n\n"
         f"{EMOJI['menu']} <b>Меню снизу</b> — быстрые кнопки:\n"
         f"\u2022 Задания — получить задания на сегодня\n"
@@ -851,9 +946,19 @@ async def cb_show_help(callback: CallbackQuery):
         f"{EMOJI['pdf']} <b>PDF</b> — в меню можно скачать "
         f"персональный вариант со своими ошибками\n\n"
         f"{EMOJI['rocket']} <b>Подписка</b> — открывает все предметы, "
-        f"статистику, PDF и напоминания",
-        main_menu()
+        f"статистику, PDF и напоминания"
     )
+    img_path = os.path.join(_IMAGES_DIR, "spravka.jfif")
+    if os.path.exists(img_path):
+        try:
+            await callback.message.answer_photo(FSInputFile(img_path), caption=help_text, reply_markup=main_menu(), parse_mode="HTML")
+            return
+        except:
+            pass
+    try:
+        await callback.message.edit_text(help_text, reply_markup=main_menu())
+    except:
+        await callback.message.answer(help_text, reply_markup=main_menu())
 
 # ── Payments ─────────────────────────────────
 
@@ -924,6 +1029,37 @@ async def safe_edit(callback: CallbackQuery, text: str, markup=None):
     except Exception as e:
         logger.warning(f"edit_text failed: {e}")
         await callback.message.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+async def send_subject_card(chat_id, subject_code: str, msg=None):
+    """Send subject info card with photo if available."""
+    desc = _SUBJECT_DESCRIPTIONS.get(subject_code, "Подготовка к ЕГЭ")
+    task_count = len(_TASKS.get(subject_code, []))
+    text = f"<b>{SUBJECTS.get(subject_code, subject_code)}</b>\n\n{desc.format(count=task_count)}"
+    
+    img_path = os.path.join(_IMAGES_DIR, _SUBJECT_IMAGES.get(subject_code, ""))
+    
+    target = msg if msg else chat_id
+    try:
+        if os.path.exists(img_path):
+            if msg:
+                await msg.answer_photo(FSInputFile(img_path), caption=text, parse_mode="HTML")
+            else:
+                await target.answer_photo(FSInputFile(img_path), caption=text, parse_mode="HTML")
+        else:
+            if msg:
+                await msg.answer(text, parse_mode="HTML")
+            else:
+                await target.answer(text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"send_subject_card failed: {e}")
+        try:
+            if msg:
+                await msg.answer(text, parse_mode="HTML")
+            else:
+                await target.answer(text, parse_mode="HTML")
+        except:
+            pass
 
 
 async def finish_tasks(target, user_db_id: int, has_sub: bool = True):
